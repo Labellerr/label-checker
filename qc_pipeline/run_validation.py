@@ -128,7 +128,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default="GEMINI_API_KEY",
         help="Environment variable that stores the Gemini API key (default: GEMINI_API_KEY).",
     )
-    parser.add_argument("--model-name", default="gemini-1.5-pro", help="Gemini model name to invoke.")
+    parser.add_argument("--model-name", default="gemini-3-flash-preview", help="Gemini model name to invoke.")
     parser.add_argument("--temperature", type=float, default=0.2, help="Generation temperature.")
     parser.add_argument("--top-p", type=float, default=None, help="Optional nucleus sampling parameter.")
     parser.add_argument("--padding", type=int, default=4, help="Pixel padding added around crops.")

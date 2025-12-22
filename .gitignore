@@ -1,6 +1,9 @@
 # Test dataset directory
 test_dataset/
 
+# User data (images and annotations)
+data/
+
 # Output directory (keep .gitkeep for directory structure)
 demo/output/*
 !demo/output/.gitkeep

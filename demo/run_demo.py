@@ -20,7 +20,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from qc_pipeline.data_loader import load_coco_dataset
-from qc_pipeline.gemini_validator_demo import create_demo_validator
+from qc_pipeline.gemini_validator import create_demo_validator, GeminiValidator
 from qc_pipeline.image_utils import CropConfig, crop_annotation, image_to_png_bytes
 
 
@@ -84,7 +84,7 @@ def run_demo(
             print(f"\n[2/5] Initializing Gemini validator...")
             validator = create_demo_validator(
                 api_key=api_key,
-                model_name="gemini-2.5-flash",
+                model_name="gemini-3-flash-preview",
                 temperature=0.2,
                 max_retries=3,
             )
@@ -106,7 +106,7 @@ def run_demo(
             
             # Load image (with caching)
             if image_info.id not in image_cache:
-                image_path = dataset_dir / image_info.file_name
+                image_path = dataset_dir / "images" / image_info.file_name
                 with Image.open(image_path) as img:
                     image_cache[image_info.id] = img.convert("RGB")
             
@@ -228,8 +228,8 @@ def run_demo(
 def main() -> None:
     """Main entry point."""
     # Configuration
-    dataset_dir = Path(__file__).parent.parent / "test_dataset"
-    coco_json = "export-#6w0PnZX02NffcYns8L1C.json"
+    dataset_dir = Path(__file__).parent.parent / "data"
+    coco_json = "annotations.json"
     output_dir = Path(__file__).parent / "output"
     
     # Get API key from environment

@@ -8,6 +8,13 @@ data/
 demo/output/*
 !demo/output/.gitkeep
 
+# Labellerr integration output files
+demo/labellerr-integration/output/*.json
+demo/labellerr-integration/output/images/*
+demo/labellerr-integration/output/crops/*.png
+demo/labellerr-integration/output/crops/*.jpg
+demo/labellerr-integration/output/crops/*.jpeg
+
 # Python
 __pycache__/
 *.py[cod]

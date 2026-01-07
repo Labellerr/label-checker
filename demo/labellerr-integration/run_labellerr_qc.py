@@ -21,7 +21,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from qc_pipeline.data_loader import load_coco_dataset
-from qc_pipeline.gemini_validator import create_demo_validator, GeminiValidator
+from qc_pipeline.gemini_validator import create_demo_validator
 from qc_pipeline.image_utils import CropConfig, crop_annotation, image_to_png_bytes
 
 from labellerr_fetcher import fetch_labellerr_data
@@ -138,7 +138,7 @@ def run_qc_validation(
         image_cache: Dict[int, Image.Image] = {}
         
         try:
-            annotations_to_process = list(dataset.iter_annotations())[:max_files]
+            annotations_to_process = list(dataset.iter_annotations())[:int(max_files)]
             
             for idx, (image_info, annotation, category) in enumerate(annotations_to_process, 1):
                 print(f"  [{idx}/{len(annotations_to_process)}] Processing {category.name}...", end=" ")
@@ -273,13 +273,14 @@ def run_qc_validation(
         status_msg += "=" * 70 + "\n"
         
         # Format summary text
+        avg_conf_str = f"{summary.average_confidence:.3f}" if summary.average_confidence else "N/A"
         summary_text = f"""
 📊 SUMMARY STATISTICS
 {'=' * 70}
 Total annotations:        {summary.total_annotations}
 Crops saved:              {summary.total_crops_saved}
 Gemini validations:       {summary.gemini_validations}
-Average confidence:       {summary.average_confidence:.3f if summary.average_confidence else 'N/A'}
+Average confidence:       {avg_conf_str}
 Low confidence count:     {len(low_confidence)} (< {confidence_threshold})
 
 Confidence by category:

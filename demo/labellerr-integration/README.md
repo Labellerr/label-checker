@@ -235,7 +235,7 @@ Edit `run_labellerr_qc.py`, line ~165:
 ```python
 validator = create_demo_validator(
     api_key=gemini_api_key,
-    model_name="gemini-2.0-flash-exp",  # Change this
+    model_name="gemini-3-flash-preview",  # Change this
     temperature=0.2,
     max_retries=3,
 )

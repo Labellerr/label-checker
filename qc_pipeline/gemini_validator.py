@@ -39,6 +39,21 @@ DEMO_PROMPT_TEMPLATE = (
     "If it doesn't match at all, use low confidence (0.0-0.3)."
 )
 
+# Guidelines-enhanced prompt template
+GUIDELINES_PROMPT_TEMPLATE = (
+    "You are validating an annotation. The expected label is: \"{expected_label}\"\n\n"
+    "LABEL DEFINITION:\n{definition}\n\n"
+    "KEY CHARACTERISTICS:\n{characteristics}\n\n"
+    "Review the image crop and determine if it matches this label definition.\n"
+    "Respond strictly as a JSON object with the following keys:\n"
+    "{{\n"
+    '  "prediction_label": "<your label>",\n'
+    '  "confidence": <number between 0 and 1>,\n'
+    '  "rationale": "<explanation>"\n'
+    "}}\n\n"
+    "Use the definition and characteristics above to make an informed judgment."
+)
+
 
 
 
@@ -54,7 +69,7 @@ class GeminiValidator:
     def __init__(
         self,
         api_key: str,
-        model_name: str = "gemini-2.5-flash",
+        model_name: str = "gemini-3-flash-preview",
         base_url: str = "https://generativelanguage.googleapis.com/v1beta",
         temperature: float = 0.2,
         top_p: float | None = None,
@@ -74,15 +89,55 @@ class GeminiValidator:
     def _endpoint(self) -> str:
         return f"{self.base_url}/models/{self.model_name}:generateContent"
 
+    def _build_guidelines_prompt(
+        self,
+        expected_label: str,
+        label_definition: Optional[Dict[str, Any]],
+    ) -> str:
+        """
+        Build prompt with guidelines context if available.
+        
+        Args:
+            expected_label: The expected label for the crop
+            label_definition: Dict with 'definition', 'key_characteristics', etc.
+            
+        Returns:
+            Formatted prompt string
+        """
+        if label_definition:
+            characteristics = "\n".join(
+                f"- {c}" for c in label_definition.get("key_characteristics", [])
+            )
+            return GUIDELINES_PROMPT_TEMPLATE.format(
+                expected_label=expected_label,
+                definition=label_definition.get("definition", "Not specified"),
+                characteristics=characteristics or "Not specified",
+            )
+        return self.prompt_template.format(expected_label=expected_label)
+
     def _build_request_body(
         self,
         crop_bytes: bytes,
         expected_label: str,
         guidelines: Optional[str],
-    ) -> Dict[str, Any]:
-        prompt = self.prompt_template.format(expected_label=expected_label)
-        if guidelines:
-            prompt += f"\n\nGuidelines:\n{guidelines.strip()}"
+        label_definitions: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Dict[str, Any], str]:
+        """Build request body and return both body and the prompt text for logging."""
+        # Check if we have a structured label definition
+        label_def = None
+        if label_definitions:
+            # Try exact match first, then case-insensitive
+            label_def = label_definitions.get(expected_label)
+            if not label_def:
+                label_def = label_definitions.get(expected_label.lower())
+        
+        # Build appropriate prompt
+        if label_def:
+            prompt = self._build_guidelines_prompt(expected_label, label_def)
+        else:
+            prompt = self.prompt_template.format(expected_label=expected_label)
+            if guidelines:
+                prompt += f"\n\nGuidelines:\n{guidelines.strip()}"
 
         parts = [
             {"text": prompt},
@@ -98,7 +153,8 @@ class GeminiValidator:
         if self.top_p is not None:
             generation_config["topP"] = self.top_p
 
-        return {"contents": [{"parts": parts}], "generationConfig": generation_config}
+        body = {"contents": [{"parts": parts}], "generationConfig": generation_config}
+        return body, prompt
 
     def _execute_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
         url = self._endpoint()
@@ -163,8 +219,32 @@ class GeminiValidator:
         crop_bytes: bytes,
         expected_label: str,
         guidelines: Optional[str] = None,
+        label_definitions: Optional[Dict[str, Any]] = None,
+        log_prompt: bool = False,
     ) -> GeminiResponse:
-        body = self._build_request_body(crop_bytes, expected_label, guidelines)
+        """
+        Validate a crop against an expected label.
+        
+        Args:
+            crop_bytes: PNG image bytes of the crop
+            expected_label: Expected label for this crop
+            guidelines: Optional raw text guidelines (legacy)
+            label_definitions: Optional dict mapping label names to their definitions
+                              Format: {label_name: {"definition": str, "key_characteristics": [str], ...}}
+            log_prompt: If True, log the prompt being sent to Gemini
+        
+        Returns:
+            GeminiResponse with prediction, confidence, and rationale
+        """
+        body, prompt = self._build_request_body(crop_bytes, expected_label, guidelines, label_definitions)
+        
+        # Log the prompt if requested
+        if log_prompt:
+            logger.info("=" * 80)
+            logger.info(f"GEMINI PROMPT for label '{expected_label}':")
+            logger.info("-" * 80)
+            logger.info(prompt)
+            logger.info("=" * 80)
 
         attempt = 0
         while True:
@@ -189,12 +269,26 @@ class GeminiValidator:
         self,
         items: Iterable[Dict[str, Any]],
         guidelines: Optional[str] = None,
+        label_definitions: Optional[Dict[str, Any]] = None,
     ) -> List[GeminiResponse]:
+        """
+        Validate a batch of crops.
+        
+        Args:
+            items: Iterable of dicts with 'crop_bytes' and 'expected_label'
+            guidelines: Optional raw text guidelines (legacy)
+            label_definitions: Optional dict mapping label names to their definitions
+        
+        Returns:
+            List of GeminiResponse objects
+        """
         responses: List[GeminiResponse] = []
         for item in items:
             crop_bytes = item["crop_bytes"]
             expected_label = item["expected_label"]
-            responses.append(self.validate_crop(crop_bytes, expected_label, guidelines))
+            responses.append(
+                self.validate_crop(crop_bytes, expected_label, guidelines, label_definitions)
+            )
         return responses
 
 

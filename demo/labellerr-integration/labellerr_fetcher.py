@@ -59,6 +59,8 @@ class LabellerrFetcher:
         statuses: List[str],
         output_dir: Path,
         export_name: str = "QC Export",
+        timeout: int = 900,
+        poll_interval: float = 3.0,
     ) -> Tuple[Path, Dict]:
         """
         Create export filtered by status and download COCO JSON.
@@ -67,6 +69,8 @@ class LabellerrFetcher:
             statuses: List of annotation statuses to export (e.g., ["accepted", "review"])
             output_dir: Directory to save the export
             export_name: Name for the export
+            timeout: Maximum time to wait for export completion in seconds (default: 900 = 15 minutes)
+            poll_interval: Time between status checks in seconds (default: 3.0)
             
         Returns:
             Tuple of (path to downloaded COCO JSON, export metadata)
@@ -88,8 +92,8 @@ class LabellerrFetcher:
         print(f"Export created with ID: {export.report_id}")
         
         # Poll until export is ready
-        print("Waiting for export to complete...")
-        result = export.status(interval=2.0, timeout=300)
+        print(f"Waiting for export to complete (timeout: {timeout}s, poll interval: {poll_interval}s)...")
+        result = export.status(interval=poll_interval, timeout=timeout)
         
         # Check if export completed successfully
         status_list = result.get("status", [])
@@ -280,6 +284,8 @@ def fetch_labellerr_data(
     project_id: str,
     statuses: List[str],
     output_dir: Path,
+    export_timeout: int = 900,
+    poll_interval: float = 3.0,
 ) -> Tuple[Path, Path, Dict]:
     """
     High-level function to fetch all data from Labellerr.
@@ -291,6 +297,8 @@ def fetch_labellerr_data(
         project_id: Labellerr project ID
         statuses: List of annotation statuses to filter
         output_dir: Directory to save all outputs
+        export_timeout: Maximum time to wait for export completion in seconds (default: 900 = 15 minutes)
+        poll_interval: Time between status checks in seconds (default: 3.0)
         
     Returns:
         Tuple of (annotations_path, images_dir, metadata)
@@ -301,6 +309,8 @@ def fetch_labellerr_data(
     coco_json_path, export_metadata = fetcher.create_and_download_export(
         statuses=statuses,
         output_dir=output_dir,
+        timeout=export_timeout,
+        poll_interval=poll_interval,
     )
     
     # Download all images referenced in the export

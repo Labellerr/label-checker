@@ -1,6 +1,6 @@
-# Gemini QC Validation Pipeline
+# Agentic Label Checker
 
-Validate human-labeled image annotations using Google's Gemini AI. This tool checks if your bounding boxes and polygons are correctly labeled by asking Gemini to verify each annotation.
+An intelligent, multi-agent system that validates image annotations using AI. The system automatically extracts annotation guidelines and uses them to verify if your bounding boxes and polygons are correctly labeled.
 
 ## Quick Start
 
@@ -65,10 +65,50 @@ python -m qc_pipeline.run_validation \
 
 ## How It Works
 
-1. **Loads** your COCO annotations
-2. **Crops** each annotated object from the image
-3. **Asks Gemini**: "Is this a [label]?"
-4. **Reports** matches/mismatches with confidence scores
+The system uses a multi-agent workflow to intelligently validate annotations:
+
+```mermaid
+graph TD
+    Start[Upload Annotations] --> CheckPDF{Guidelines PDF Provided?}
+    CheckPDF -->|Yes| Agent1[Agent 1: Guidelines Extractor]
+    CheckPDF -->|No| Agent2[Agent 2: Validator]
+    
+    Agent1 --> ExtractText[Extract PDF Text]
+    ExtractText --> ParseVisual[Parse Visual Characteristics]
+    ParseVisual --> StoreContext[Store in Memory]
+    StoreContext --> Agent2
+    
+    Agent2 --> LoadImages[Load Images & Annotations]
+    LoadImages --> CropLoop[For Each Annotation]
+    CropLoop --> GetContext[Retrieve Guidelines from Memory]
+    GetContext --> BuildPrompt[Build Context-Aware Prompt]
+    BuildPrompt --> ValidateAI[Validate with AI]
+    ValidateAI --> SaveResult[Save Result]
+    SaveResult --> CropLoop
+    CropLoop --> Report[Generate Report]
+    
+    style Agent1 fill:#e1f5ff
+    style Agent2 fill:#fff4e1
+```
+
+### Agent 1: Guidelines Extractor
+- Automatically processes annotation guidelines PDF
+- Extracts visual characteristics (shape, color, texture, size)
+- Stores category definitions in memory
+- Triggers automatically when PDF is uploaded
+
+### Agent 2: Validator
+- Loads guidelines from shared memory
+- Crops each annotated object
+- Builds context-aware prompts with visual characteristics
+- Validates labels with AI using extracted guidelines
+- Reports confidence scores and mismatches
+
+**Key Features:**
+- **Automatic Context**: Guidelines extracted and applied automatically
+- **Visual Focus**: Emphasizes shape, color, texture, and appearance
+- **Stateful Memory**: Context flows between agents seamlessly
+- **Traceable**: Full logging of prompts and AI responses
 
 ## Requirements
 

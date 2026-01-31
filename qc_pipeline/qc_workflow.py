@@ -205,7 +205,7 @@ class QCValidationWorkflow:
         
         validator = GeminiValidator(
             api_key=self.gemini_api_key,
-            model_name="gemini-2.0-flash-exp",
+            model_name="gemini-3-flash-preview",
             prompt_template=DEMO_PROMPT_TEMPLATE,
         )
         

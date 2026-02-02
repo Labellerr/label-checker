@@ -25,6 +25,8 @@ class ValidationResult:
     label: str
     crop_path: str
     confidence: Optional[float]
+    prediction_label: Optional[str]
+    is_match: Optional[bool]
     gemini_response: Optional[str]
     error: Optional[str]
 
@@ -35,9 +37,12 @@ class ValidationSummary:
     total_annotations: int
     total_crops_saved: int
     gemini_validations: int
+    matches: int
+    mismatches: int
     average_confidence: Optional[float]
     confidence_by_category: Dict[str, float]
     low_confidence_annotations: List[Dict]
+    mismatched_annotations: List[Dict]
 
 
 class QCValidationWorkflow:
@@ -154,9 +159,12 @@ class QCValidationWorkflow:
                 total_annotations=0,
                 total_crops_saved=0,
                 gemini_validations=0,
+                matches=0,
+                mismatches=0,
                 average_confidence=None,
                 confidence_by_category={},
-                low_confidence_annotations=[]
+                low_confidence_annotations=[],
+                mismatched_annotations=[]
             )
         
         # Log status messages
@@ -207,6 +215,8 @@ class QCValidationWorkflow:
             api_key=self.gemini_api_key,
             model_name="gemini-3-flash-preview",
             prompt_template=DEMO_PROMPT_TEMPLATE,
+            temperature=0.1,  # Strict, deterministic responses
+            enable_code_execution=True,  # Enable code execution for counting/analysis
         )
         
         crops_dir = self.output_dir / "crops"
@@ -256,6 +266,8 @@ class QCValidationWorkflow:
                 
                 # Validate with Gemini
                 confidence = None
+                prediction_label = None
+                is_match = None
                 gemini_response = None
                 error = None
                 
@@ -283,12 +295,18 @@ class QCValidationWorkflow:
                         log_prompt=log_this_prompt,
                     )
                     confidence = response.confidence
+                    prediction_label = response.prediction_label
                     gemini_response = response.raw_text
                     
+                    # Check if prediction matches expected label (case-insensitive)
+                    is_match = prediction_label.strip().lower() == category.name.strip().lower()
+                    
                     if has_guidelines:
-                        logger.info(f"  ✓ Validated (confidence: {confidence:.2f}, using guidelines)")
+                        match_str = "✓ MATCH" if is_match else "✗ MISMATCH"
+                        logger.info(f"  ✓ Validated (confidence: {confidence:.2f}, {match_str}, predicted: {prediction_label}, using guidelines)")
                     else:
-                        logger.info(f"  ✓ Validated (confidence: {confidence:.2f})")
+                        match_str = "✓ MATCH" if is_match else "✗ MISMATCH"
+                        logger.info(f"  ✓ Validated (confidence: {confidence:.2f}, {match_str}, predicted: {prediction_label})")
                         
                 except Exception as e:
                     error = str(e)
@@ -301,6 +319,8 @@ class QCValidationWorkflow:
                     label=category.name,
                     crop_path=str(crop_path.relative_to(self.output_dir)),
                     confidence=confidence,
+                    prediction_label=prediction_label,
+                    is_match=is_match,
                     gemini_response=gemini_response,
                     error=error,
                 )
@@ -323,6 +343,10 @@ class QCValidationWorkflow:
         """Generate summary statistics from validation results."""
         successful_crops = [r for r in results if r.crop_path]
         gemini_results = [r for r in results if r.confidence is not None]
+        
+        # Count matches and mismatches
+        matches = sum(1 for r in gemini_results if r.is_match is True)
+        mismatches = sum(1 for r in gemini_results if r.is_match is False)
         
         # Calculate average confidence
         if gemini_results:
@@ -347,20 +371,38 @@ class QCValidationWorkflow:
             {
                 "annotation_id": r.annotation_id,
                 "label": r.label,
+                "prediction_label": r.prediction_label,
                 "confidence": r.confidence,
+                "is_match": r.is_match,
                 "crop_path": str(self.output_dir / r.crop_path),
             }
             for r in gemini_results
             if r.confidence < confidence_threshold
         ]
         
+        # Find mismatched annotations (label doesn't match prediction)
+        mismatched = [
+            {
+                "annotation_id": r.annotation_id,
+                "label": r.label,
+                "prediction_label": r.prediction_label,
+                "confidence": r.confidence,
+                "crop_path": str(self.output_dir / r.crop_path),
+            }
+            for r in gemini_results
+            if r.is_match is False
+        ]
+        
         return ValidationSummary(
             total_annotations=len(results),
             total_crops_saved=len(successful_crops),
             gemini_validations=len(gemini_results),
+            matches=matches,
+            mismatches=mismatches,
             average_confidence=avg_confidence,
             confidence_by_category=confidence_by_category,
             low_confidence_annotations=low_confidence,
+            mismatched_annotations=mismatched,
         )
     
     def _save_results(

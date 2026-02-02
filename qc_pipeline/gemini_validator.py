@@ -15,43 +15,73 @@ logger = logging.getLogger(__name__)
 DEFAULT_PROMPT_TEMPLATE = (
     "You are validating the classification of an object crop extracted from an annotated image. "
     "The expected label provided by a human annotator is: \"{expected_label}\".\n\n"
+    "🔴 VALIDATION INSTRUCTIONS:\n"
+    "1. Examine the image CAREFULLY and SYSTEMATICALLY\n"
+    "2. If the label involves quantities (e.g., \"four wheeler\"), COUNT the relevant features\n"
+    "3. Verify ALL visual characteristics that define this category\n"
+    "4. Check if this could be confused with a similar but different category\n"
+    "5. Be STRICT and CONSERVATIVE with your confidence assessment\n\n"
     "Review the crop and decide whether the object's class matches the expected label. "
     "Respond strictly as a JSON object with the following keys:\n"
     "{{\n"
     '  "prediction_label": "<model_label>",\n'
     '  "confidence": <number between 0 and 1>,\n'
-    '  "rationale": "<optional short explanation>"\n'
-    "}}\n"
-    "If you are unsure, pick the closest label and use a low confidence score."
+    '  "rationale": "<detailed explanation of what you observed and verified>"\n'
+    "}}\n\n"
+    "⚠️ IMPORTANT: Only use high confidence (>0.8) if you are ABSOLUTELY CERTAIN. "
+    "If you are unsure or cannot verify all features, use a low confidence score."
 )
 
 # Simplified prompt template for demo: "Is this a [label]?"
 DEMO_PROMPT_TEMPLATE = (
-    "Look at this cropped image and determine if it contains a \"{expected_label}\".\n\n"
+    "You are an expert visual classifier. Your task is to determine if this cropped image is showing the image of \"{expected_label}\".\n\n"
     "Respond strictly as a JSON object with the following keys:\n"
     "{{\n"
     '  "prediction_label": "<your label>",\n'
     '  "confidence": <number between 0 and 1>,\n'
-    '  "rationale": "<optional explanation>"\n'
-    "}}\n\n"
-    "If the image clearly shows a {expected_label}, use high confidence (0.8-1.0).\n"
-    "If you're unsure or it partially matches, use medium confidence (0.4-0.7).\n"
-    "If it doesn't match at all, use low confidence (0.0-0.3)."
+    '  "rationale": "<detailed step-by-step explanation: what you counted, what you verified, why you are confident or uncertain>"\n'
+    "}}\n"
 )
 
 # Guidelines-enhanced prompt template
 GUIDELINES_PROMPT_TEMPLATE = (
-    "You are validating an annotation. The expected label is: \"{expected_label}\"\n\n"
-    "LABEL DEFINITION:\n{definition}\n\n"
-    "KEY CHARACTERISTICS:\n{characteristics}\n\n"
-    "Review the image crop and determine if it matches this label definition.\n"
+    "You are an expert visual validator. The expected label is: \"{expected_label}\"\n\n"
+    "📋 LABEL DEFINITION:\n{definition}\n\n"
+    "🔍 KEY VISUAL CHARACTERISTICS TO VERIFY:\n{characteristics}\n\n"
+    "🔴 STRICT VALIDATION PROTOCOL - FOLLOW EACH STEP:\n\n"
+    "STEP 1 - OBSERVE THE IMAGE:\n"
+    "- Look at the entire image systematically\n"
+    "- Identify all visible objects, components, and features\n"
+    "- Note anything that stands out\n\n"
+    "STEP 2 - COUNT QUANTIFIABLE FEATURES:\n"
+    "- If the label involves quantities (e.g., \"four wheeler\" = 4 wheels, \"two wheeler\" = 2 wheels), COUNT them\n"
+    "- Verify counts EXACTLY match what the label implies\n"
+    "- Use code execution if needed to analyze or count features\n\n"
+    "STEP 3 - VERIFY EACH CHARACTERISTIC:\n"
+    "Go through EACH characteristic listed above one by one:\n"
+    "- Does the image show this characteristic? YES/NO\n"
+    "- Can you verify it with certainty? YES/NO\n"
+    "- Mark down any mismatches or uncertainties\n\n"
+    "STEP 4 - CROSS-CHECK FOR CONFUSION:\n"
+    "- Could this object be mistaken for a similar category?\n"
+    "- What features DISTINGUISH it from similar objects?\n"
+    "- Are there any contradictory visual cues?\n\n"
+    "STEP 5 - FINAL VERIFICATION:\n"
+    "- Review your analysis again\n"
+    "- Double-check your counts and observations\n"
+    "- Be HONEST about any uncertainty\n\n"
+    "⚠️ STRICT RULES:\n"
+    "- ONLY give high confidence (0.8-1.0) if you verified ALL characteristics\n"
+    "- Use medium confidence (0.4-0.7) if you have ANY doubt or missing information\n"
+    "- Use low confidence (0.0-0.3) if characteristics don't match or you cannot verify\n"
+    "- DO NOT confuse similar categories (e.g., two wheeler vs four wheeler, eyes vs lips)\n"
+    "- BE CONSERVATIVE - better to express doubt than give wrong high-confidence predictions\n\n"
     "Respond strictly as a JSON object with the following keys:\n"
     "{{\n"
     '  "prediction_label": "<your label>",\n'
     '  "confidence": <number between 0 and 1>,\n'
-    '  "rationale": "<explanation>"\n'
-    "}}\n\n"
-    "Use the definition and characteristics above to make an informed judgment."
+    '  "rationale": "<step-by-step analysis: what you counted, which characteristics you verified, what matches/mismatches you found, why you are confident or uncertain>"\n'
+    "}}\n"
 )
 
 
@@ -71,11 +101,12 @@ class GeminiValidator:
         api_key: str,
         model_name: str = "gemini-3-flash-preview",
         base_url: str = "https://generativelanguage.googleapis.com/v1beta",
-        temperature: float = 0.2,
+        temperature: float = 0.1,  # Lower temperature for more deterministic, careful responses
         top_p: float | None = None,
         max_retries: int = 3,
         timeout_seconds: int = 30,
         prompt_template: str = DEFAULT_PROMPT_TEMPLATE,
+        enable_code_execution: bool = True,
     ) -> None:
         self.api_key = api_key
         self.model_name = model_name
@@ -85,6 +116,7 @@ class GeminiValidator:
         self.max_retries = max_retries
         self.timeout_seconds = timeout_seconds
         self.prompt_template = prompt_template
+        self.enable_code_execution = enable_code_execution
 
     def _endpoint(self) -> str:
         return f"{self.base_url}/models/{self.model_name}:generateContent"
@@ -154,6 +186,11 @@ class GeminiValidator:
             generation_config["topP"] = self.top_p
 
         body = {"contents": [{"parts": parts}], "generationConfig": generation_config}
+        
+        # Add code execution tool if enabled
+        if self.enable_code_execution:
+            body["tools"] = [{"codeExecution": {}}]
+        
         return body, prompt
 
     def _execute_request(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -180,7 +217,20 @@ class GeminiValidator:
         if not parts:
             raise ValueError("Gemini response missing content parts")
 
-        text = parts[0].get("text", "").strip()
+        # Extract text from parts (may include code execution results)
+        text_parts = []
+        for part in parts:
+            if "text" in part:
+                text_parts.append(part["text"])
+            elif "executableCode" in part:
+                # Log code execution if present
+                logger.info(f"Code execution detected: {part.get('executableCode', {}).get('code', '')}")
+            elif "codeExecutionResult" in part:
+                # Log execution result
+                result = part.get("codeExecutionResult", {})
+                logger.info(f"Code execution result: {result.get('output', '')}")
+        
+        text = "\n".join(text_parts).strip()
         if not text:
             raise ValueError("Gemini response missing text output")
 
@@ -296,14 +346,16 @@ class GeminiValidator:
 def create_demo_validator(
     api_key: str,
     model_name: str = "gemini-3-flash-preview",
-    temperature: float = 0.2,
+    temperature: float = 0.1,  # Lower temperature for stricter, more careful validation
     max_retries: int = 3,
+    enable_code_execution: bool = True,
 ) -> GeminiValidator:
-    """Create a Gemini validator configured for demo usage."""
+    """Create a Gemini validator configured for demo usage with code execution enabled."""
     return GeminiValidator(
         api_key=api_key,
         model_name=model_name,
         temperature=temperature,
         max_retries=max_retries,
         prompt_template=DEMO_PROMPT_TEMPLATE,
+        enable_code_execution=enable_code_execution,
     )

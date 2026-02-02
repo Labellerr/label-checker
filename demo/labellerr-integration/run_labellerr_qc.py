@@ -283,12 +283,15 @@ def run_qc_validation(
         
         # Format summary text
         avg_conf_str = f"{summary.average_confidence:.3f}" if summary.average_confidence else "N/A"
+        accuracy = (summary.matches / summary.gemini_validations * 100) if summary.gemini_validations > 0 else 0
         summary_text = f"""
 📊 SUMMARY STATISTICS
 {'=' * 70}
 Total annotations:        {summary.total_annotations}
 Crops saved:              {summary.total_crops_saved}
 Gemini validations:       {summary.gemini_validations}
+Matches:                  {summary.matches} ({accuracy:.1f}% accuracy)
+Mismatches:               {summary.mismatches}
 Average confidence:       {avg_conf_str}
 Low confidence count:     {len(summary.low_confidence_annotations)} (< {confidence_threshold})
 
@@ -297,13 +300,25 @@ Confidence by category:
         for label, conf in summary.confidence_by_category.items():
             summary_text += f"  • {label:30s} {conf:.3f}\n"
         
-        # Prepare low confidence gallery
+        # Prepare low confidence gallery (combine low confidence AND mismatches)
         low_conf_gallery = []
-        for item in summary.low_confidence_annotations[:20]:  # Limit to 20 images
+        
+        # Add mismatches first (these are the most important issues)
+        for item in summary.mismatched_annotations[:20]:
             crop_path = item["crop_path"]
             if Path(crop_path).exists():
-                caption = f"{item['label']} (conf: {item['confidence']:.2f})"
+                caption = f"⚠️ MISMATCH: Expected '{item['label']}', Got '{item['prediction_label']}' (conf: {item['confidence']:.2f})"
                 low_conf_gallery.append((crop_path, caption))
+        
+        # Add low confidence items (that aren't already mismatches)
+        mismatch_ids = {item["annotation_id"] for item in summary.mismatched_annotations}
+        for item in summary.low_confidence_annotations[:20]:
+            if item["annotation_id"] not in mismatch_ids:
+                crop_path = item["crop_path"]
+                if Path(crop_path).exists():
+                    match_status = "✓" if item.get("is_match") else "✗"
+                    caption = f"{match_status} {item['label']} → {item.get('prediction_label', '?')} (conf: {item['confidence']:.2f})"
+                    low_conf_gallery.append((crop_path, caption))
         
         # Load results JSON for display
         results_path = output_dir / "qc_results.json"
@@ -452,9 +467,9 @@ def create_gradio_interface():
                         show_label=False,
                     )
                 
-                with gr.Accordion("⚠️ Low Confidence Annotations", open=True):
+                with gr.Accordion("⚠️ Issues Found (Mismatches & Low Confidence)", open=True):
                     low_conf_gallery = gr.Gallery(
-                        label="Low Confidence Crops",
+                        label="Mismatched Labels and Low Confidence Annotations",
                         show_label=True,
                         columns=4,
                         rows=2,

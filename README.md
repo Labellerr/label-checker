@@ -117,7 +117,18 @@ graph TD
 - Images in JPEG/PNG format
 - Annotations in COCO JSON format
 
-## Documentation
+## 📚 Documentation
 
+### Core Documentation
+- **[System Architecture](ARCHITECTURE.md)** - Complete architectural overview with diagrams
+- **[QC Pipeline](qc_pipeline/README.md)** - Detailed module documentation and architecture
+- **[Labellerr Integration](demo/labellerr-integration/README.md)** - Integration guide with workflows
 - [Feasibility Assessment](docs/gemini_qc_feasibility.md)
 - [Validation Flow Details](docs/gemini_qc_flow.md)
+
+### Quick Navigation
+| Component | Description | Documentation |
+|-----------|-------------|---------------|
+| 🏗️ **System Overview** | High-level architecture, data flows, design decisions | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| 🔧 **QC Pipeline** | Core validation engine, modules, API reference | [qc_pipeline/README.md](qc_pipeline/README.md) |
+| 🔌 **Labellerr Integration** | Platform integration, workflows, setup guide | [demo/labellerr-integration/README.md](demo/labellerr-integration/README.md) |

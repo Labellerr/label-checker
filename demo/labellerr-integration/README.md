@@ -262,31 +262,223 @@ SDK_PATH = Path(__file__).parent.parent.parent.parent / "SDKPython-1"
 
 ## Architecture
 
-### Data Flow
+### System Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "User Interface Layer"
+        UI[Gradio Web UI<br/>run_labellerr_qc.py]
+    end
+    
+    subgraph "Integration Layer"
+        Fetcher[Labellerr Fetcher<br/>labellerr_fetcher.py]
+        SDK[Labellerr SDK<br/>SDKPython-1]
+    end
+    
+    subgraph "Labellerr Platform"
+        API[Labellerr API]
+        CDN[Image CDN]
+        Projects[Projects & Annotations]
+    end
+    
+    subgraph "QC Pipeline Core"
+        direction TB
+        DataLoader[Data Loader<br/>COCO Parser]
+        ImageUtils[Image Utils<br/>Crop Generator]
+        Workflow[QC Workflow<br/>Orchestrator]
+        Gemini[Gemini Validator<br/>AI Validation]
+        Guidelines[Guidelines Extractor<br/>PDF Parser]
+    end
+    
+    subgraph "Storage"
+        Output[Output Directory]
+        Images[Downloaded Images]
+        Crops[Generated Crops]
+        Results[Validation Results]
+    end
+    
+    UI -->|1. Credentials + Config| Fetcher
+    Fetcher -->|2. Auth| SDK
+    SDK -->|3. Create Export<br/>Filter by Status| API
+    API -->|4. Export Ready| SDK
+    SDK -->|5. Download COCO JSON| API
+    Fetcher -->|6. Get Image URLs| CDN
+    CDN -->|7. Image Data| Images
+    
+    UI -->|8. COCO + Images| Workflow
+    Workflow --> DataLoader
+    Workflow --> ImageUtils
+    Workflow --> Guidelines
+    DataLoader --> Workflow
+    ImageUtils --> Crops
+    Guidelines --> Workflow
+    Workflow --> Gemini
+    Gemini -->|9. Validation Results| Workflow
+    Workflow --> Results
+    
+    Results -->|10. Display| UI
+    Crops -->|11. Gallery View| UI
+    
+    style UI fill:#e1f5fe
+    style Fetcher fill:#fff3e0
+    style SDK fill:#fff3e0
+    style Workflow fill:#f3e5f5
+    style Gemini fill:#fce4ec
+    style Results fill:#e8f5e9
+```
+
+### Detailed Data Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Gradio as Gradio UI
+    participant Fetcher as Labellerr Fetcher
+    participant SDK as Labellerr SDK
+    participant API as Labellerr API
+    participant Workflow as QC Workflow
+    participant Gemini as Gemini AI
+    
+    User->>Gradio: Enter Credentials + Select Statuses
+    User->>Gradio: Click "Fetch & Run QC"
+    
+    rect rgb(255, 243, 224)
+        Note over Gradio,API: Phase 1: Data Acquisition
+        Gradio->>Fetcher: fetch_labellerr_data()
+        Fetcher->>SDK: Initialize Client
+        SDK->>API: Authenticate
+        API-->>SDK: Auth Token
+        
+        Fetcher->>SDK: create_export(statuses=['accepted'])
+        SDK->>API: POST /export (with status filter)
+        API-->>SDK: Export ID
+        
+        loop Poll Until Ready
+            SDK->>API: GET /export/status
+            API-->>SDK: Status Update
+        end
+        
+        API-->>SDK: Export Complete + Download URL
+        SDK-->>Fetcher: COCO JSON Path
+        
+        Fetcher->>API: Download Images
+        API-->>Fetcher: Image Files
+        Fetcher->>Gradio: (coco_json, images_dir, metadata)
+    end
+    
+    rect rgb(243, 229, 245)
+        Note over Gradio,Gemini: Phase 2: QC Validation
+        Gradio->>Workflow: run(coco_json, images_dir)
+        
+        Workflow->>Workflow: Load COCO Dataset
+        Workflow->>Workflow: Extract Guidelines (if PDF)
+        
+        loop For Each Annotation
+            Workflow->>Workflow: Load & Cache Image
+            Workflow->>Workflow: Crop Annotation
+            Workflow->>Gemini: validate_crop(crop, label, guidelines)
+            Gemini-->>Workflow: (prediction, confidence, rationale)
+            Workflow->>Workflow: Check Label Match
+            Workflow->>Workflow: Store Result
+        end
+        
+        Workflow->>Workflow: Generate Summary
+        Workflow->>Workflow: Flag Mismatches
+        Workflow-->>Gradio: (results, summary)
+    end
+    
+    rect rgb(232, 245, 233)
+        Note over Gradio,User: Phase 3: Display Results
+        Gradio->>Gradio: Format Summary Stats
+        Gradio->>Gradio: Prepare Mismatch Gallery
+        Gradio->>User: Show Results + Low Confidence Crops
+    end
+```
+
+### Module Integration Map
+
+```mermaid
+graph LR
+    subgraph "Labellerr Integration"
+        LF[labellerr_fetcher.py]
+        RUN[run_labellerr_qc.py]
+    end
+    
+    subgraph "QC Pipeline Modules Used"
+        DL[data_loader.py]
+        IU[image_utils.py]
+        GV[gemini_validator.py]
+        WF[qc_workflow.py]
+        GE[guidelines_extractor.py]
+    end
+    
+    subgraph "External Dependencies"
+        SDK[Labellerr SDK]
+        GRADIO[Gradio]
+        GEMINI[Gemini API]
+    end
+    
+    RUN -->|imports| LF
+    RUN -->|imports| DL
+    RUN -->|imports| IU
+    RUN -->|imports| GV
+    RUN -->|imports| WF
+    RUN -->|imports| GE
+    
+    LF -->|uses| SDK
+    RUN -->|uses| GRADIO
+    GV -->|calls| GEMINI
+    GE -->|calls| GEMINI
+    
+    style LF fill:#fff3e0
+    style RUN fill:#e1f5fe
+    style WF fill:#f3e5f5
+    style GV fill:#fce4ec
+```
+
+### Key Integration Points
+
+1. **Labellerr → QC Pipeline**
+   - `labellerr_fetcher.py` downloads COCO JSON and images
+   - Output format matches QC pipeline's expected input
+   - No modifications to QC pipeline code needed
+
+2. **QC Pipeline → Gradio UI**
+   - `run_labellerr_qc.py` orchestrates the workflow
+   - Wraps QC pipeline in Gradio interface
+   - Real-time status updates via Gradio components
+
+3. **Stateful Session Management**
+   - Guidelines extracted once per session
+   - Stored in Gradio `State` component
+   - Reused across multiple validation runs
+
+### Component Responsibilities
+
+| Component | Purpose | Key Functions |
+|-----------|---------|---------------|
+| `labellerr_fetcher.py` | SDK integration | `create_and_download_export()`<br/>`download_project_images()` |
+| `run_labellerr_qc.py` | UI orchestration | `run_qc_validation()`<br/>`process_guidelines_pdf()`<br/>`create_gradio_interface()` |
+| `qc_workflow.py` | Validation workflow | `run()`<br/>`_validate_annotations()`<br/>`_generate_summary()` |
+| `gemini_validator.py` | AI validation | `validate_crop()`<br/>`_build_request_body()` |
+
+### Data Transformations
 
 ```
-User Input (Gradio)
-    ↓
-Labellerr SDK Client
-    ↓
-Create Export (filtered by status)
-    ↓
-Download COCO JSON + Images
-    ↓
-QC Pipeline (existing modules)
-    ↓
-Gemini Validation
-    ↓
-Results (JSON + UI)
+Labellerr Annotations (API format)
+    ↓ [SDK Export]
+COCO JSON (standard format)
+    ↓ [data_loader.py]
+CocoDataset (Python objects)
+    ↓ [image_utils.py]
+Cropped Images (PNG bytes)
+    ↓ [gemini_validator.py]
+Validation Results (structured)
+    ↓ [qc_workflow.py]
+Summary Statistics + Mismatches
+    ↓ [run_labellerr_qc.py]
+Gradio UI Display
 ```
-
-### Module Integration
-
-- **`labellerr_fetcher.py`**: Handles Labellerr SDK integration
-- **`run_labellerr_qc.py`**: Gradio UI and orchestration
-- **`qc_pipeline/`**: Existing QC modules (data_loader, image_utils, gemini_validator)
-
-No modifications to existing QC pipeline code required.
 
 ## SDK Functions Used
 

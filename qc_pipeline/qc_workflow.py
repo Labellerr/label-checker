@@ -257,6 +257,9 @@ class QCValidationWorkflow:
         results = []
         image_cache = {}
         
+        # Resolve images directory to safe root to prevent path traversal
+        safe_images_root = images_dir.resolve()
+        
         logger.info(f"Validating {len(annotations)} annotations...")
         if guidelines_dict:
             logger.info(f"Using guidelines for categories: {list(guidelines_dict.keys())}")
@@ -275,9 +278,22 @@ class QCValidationWorkflow:
             
             # Load image (with caching)
             if annotation.image_id not in image_cache:
-                image_path = images_dir / image_info.file_name
-                if not image_path.exists():
-                    logger.warning(f"Image not found: {image_path}")
+                # Construct and validate image path to prevent path traversal
+                try:
+                    image_path = (images_dir / image_info.file_name).resolve()
+                except OSError as e:
+                    logger.warning(f"Failed to resolve image path for {image_info.file_name}: {e}")
+                    continue
+                
+                # Ensure resolved path is within expected images directory
+                try:
+                    image_path.relative_to(safe_images_root)
+                except ValueError:
+                    logger.warning(f"Image path escapes images directory, skipping: {image_path}")
+                    continue
+                
+                if not image_path.exists() or not image_path.is_file():
+                    logger.warning(f"Image not found or not a file: {image_path}")
                     continue
                 
                 with Image.open(image_path) as img:

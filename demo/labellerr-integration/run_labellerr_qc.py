@@ -33,6 +33,34 @@ from labellerr_fetcher import fetch_labellerr_data
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Mapping from UI-friendly status names to Labellerr API status names
+# UI shows simplified names, but API requires specific status values
+STATUS_MAPPING = {
+    "reviewer_layer": ["review", "r_assigned"],
+    "client_reviewer_layer": ["client_review", "cr_assigned"],
+    "completed": ["accepted"],
+}
+
+
+def map_statuses_to_api(ui_statuses: List[str]) -> List[str]:
+    """
+    Convert UI-friendly status names to Labellerr API status names.
+    
+    Args:
+        ui_statuses: List of UI status names (e.g., ["reviewer_layer", "completed"])
+        
+    Returns:
+        List of API status names (e.g., ["review", "r_assigned", "accepted"])
+    """
+    api_statuses = []
+    for status in ui_statuses:
+        if status in STATUS_MAPPING:
+            api_statuses.extend(STATUS_MAPPING[status])
+        else:
+            # Pass through unknown statuses (backwards compatibility)
+            api_statuses.append(status)
+    return api_statuses
+
 
 def setup_logging(output_dir: Path) -> Path:
     """
@@ -228,7 +256,9 @@ def run_qc_validation(
             logger.info(f"Guidelines labels: {list(guidelines_dict.keys())}")
         
         # Step 1: Fetch data from Labellerr
-        status_msg = "📥 Fetching data from Labellerr...\n"
+        # Convert UI status names to API status names
+        api_statuses = map_statuses_to_api(statuses)
+        status_msg = f"📥 Fetching data from Labellerr (statuses: {api_statuses})...\n"
         print(status_msg)
         
         coco_json_path, images_dir, metadata = fetch_labellerr_data(
@@ -236,7 +266,7 @@ def run_qc_validation(
             api_secret=api_secret,
             client_id=client_id,
             project_id=project_id,
-            statuses=statuses,
+            statuses=api_statuses,
             output_dir=output_dir,
             export_timeout=export_timeout,
         )
@@ -410,9 +440,9 @@ def create_gradio_interface():
                 
                 gr.Markdown("### ⚙️ Settings")
                 statuses = gr.CheckboxGroup(
-                    choices=["review", "r_assigned", "client_review", "cr_assigned", "accepted"],
+                    choices=["reviewer_layer", "client_reviewer_layer", "completed"],
                     label="Annotation Statuses",
-                    value=["accepted"],
+                    value=["completed"],
                     info="Select which annotation statuses to validate",
                 )
                 
@@ -422,7 +452,6 @@ def create_gradio_interface():
                         value=50,
                         minimum=1,
                         maximum=1000,
-                        step=1,
                     )
                     confidence_threshold = gr.Slider(
                         label="Low Confidence Threshold",
@@ -437,7 +466,6 @@ def create_gradio_interface():
                     value=900,
                     minimum=60,
                     maximum=3600,
-                    step=60,
                     info="Maximum time to wait for export completion (default: 900 = 15 minutes)",
                 )
                 

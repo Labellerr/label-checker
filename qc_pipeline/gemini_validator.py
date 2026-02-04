@@ -14,40 +14,49 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT_TEMPLATE = (
     "You are validating the classification of an object crop extracted from an annotated image. "
-    "The expected label provided by a human annotator is: \"{expected_label}\".\n\n"
+    "The annotator labeled this as: \"{expected_label}\".\n\n"
+    "{annotation_context}"
     "🔴 VALIDATION INSTRUCTIONS:\n"
     "1. Examine the image CAREFULLY and SYSTEMATICALLY\n"
     "2. If the label involves quantities (e.g., \"four wheeler\"), COUNT the relevant features\n"
     "3. Verify ALL visual characteristics that define this category\n"
     "4. Check if this could be confused with a similar but different category\n"
     "5. Be STRICT and CONSERVATIVE with your confidence assessment\n\n"
-    "Review the crop and decide whether the object's class matches the expected label. "
+    "Review the crop and decide whether the object's class matches the annotated label. "
     "Respond strictly as a JSON object with the following keys:\n"
     "{{\n"
     '  "prediction_label": "<model_label>",\n'
     '  "confidence": <number between 0 and 1>,\n'
-    '  "rationale": "<detailed explanation of what you observed and verified>"\n'
+    '  "rationale": "<detailed explanation of what you observed and verified. If the visual evidence does not match the annotated label, explicitly state: \'This is mislabeled. The annotator labeled it as {expected_label}, but it should be <correct_label> because <specific visual evidence>.\'>"\n'
     "}}\n\n"
     "⚠️ IMPORTANT: Only use high confidence (>0.8) if you are ABSOLUTELY CERTAIN. "
-    "If you are unsure or cannot verify all features, use a low confidence score."
+    "If you are unsure or cannot verify all features, use a low confidence score. "
+    "If mislabeled, clearly state what it was incorrectly labeled as and what it should be."
 )
 
 # Simplified prompt template for demo: "Is this a [label]?"
 DEMO_PROMPT_TEMPLATE = (
-    "You are an expert visual classifier. Your task is to determine if this cropped image is showing the image of \"{expected_label}\".\n\n"
+    "You are an expert visual classifier. The annotator labeled this cropped image as: \"{expected_label}\".\n\n"
+    "{annotation_context}"
+    "Your task is to validate whether the visual content matches this label.\n\n"
+    "🔍 VALIDATION REQUIREMENTS:\n"
+    "- If the visual evidence MATCHES the annotated label, confirm this clearly\n"
+    "- If the visual evidence DOES NOT MATCH, explicitly state: \"This is mislabeled. The annotator labeled it as '{expected_label}', but the visual evidence shows it should be '<correct_label>' because <specific visual reasons>\"\n"
+    "- Provide specific visual evidence to support your conclusion\n\n"
     "Respond strictly as a JSON object with the following keys:\n"
     "{{\n"
     '  "prediction_label": "<your label>",\n'
     '  "confidence": <number between 0 and 1>,\n'
-    '  "rationale": "<detailed step-by-step explanation: what you counted, what you verified, why you are confident or uncertain>"\n'
+    '  "rationale": "<detailed step-by-step explanation: what you counted, what you verified, why you are confident or uncertain. If mislabeled, explicitly state what the annotator labeled it as and what it should be with specific visual evidence>"\n'
     "}}\n"
 )
 
 # Guidelines-enhanced prompt template
 GUIDELINES_PROMPT_TEMPLATE = (
-    "You are an expert visual validator. The expected label is: \"{expected_label}\"\n\n"
-    "📋 LABEL DEFINITION:\n{definition}\n\n"
-    "🔍 KEY VISUAL CHARACTERISTICS TO VERIFY:\n{characteristics}\n\n"
+    "You are an expert visual validator. The annotator labeled this as: \"{expected_label}\"\n\n"
+    "LABEL DEFINITION:\n{definition}\n\n"
+    "KEY VISUAL CHARACTERISTICS TO VERIFY:\n{characteristics}\n\n"
+    "{annotation_context}"
     "🔴 STRICT VALIDATION PROTOCOL - FOLLOW EACH STEP:\n\n"
     "STEP 1 - OBSERVE THE IMAGE:\n"
     "- Look at the entire image systematically\n"
@@ -76,11 +85,16 @@ GUIDELINES_PROMPT_TEMPLATE = (
     "- Use low confidence (0.0-0.3) if characteristics don't match or you cannot verify\n"
     "- DO NOT confuse similar categories (e.g., two wheeler vs four wheeler, eyes vs lips)\n"
     "- BE CONSERVATIVE - better to express doubt than give wrong high-confidence predictions\n\n"
+    "🔍 RATIONALE REQUIREMENTS:\n"
+    "- If the visual evidence MATCHES the annotated label \"{expected_label}\", confirm this clearly\n"
+    "- If the visual evidence DOES NOT MATCH, explicitly state: \"This is mislabeled. The annotator labeled it as '{expected_label}', but the visual evidence shows it should be '<correct_label>' because <specific reasons>\"\n"
+    "- Always provide specific visual evidence to support your conclusion\n"
+    "- Be clear and direct about any mislabeling\n\n"
     "Respond strictly as a JSON object with the following keys:\n"
     "{{\n"
     '  "prediction_label": "<your label>",\n'
     '  "confidence": <number between 0 and 1>,\n'
-    '  "rationale": "<step-by-step analysis: what you counted, which characteristics you verified, what matches/mismatches you found, why you are confident or uncertain>"\n'
+    '  "rationale": "<step-by-step analysis: what you counted, which characteristics you verified, what matches/mismatches you found. If mislabeled, explicitly state the annotator labeled it as X but it should be Y because of specific visual evidence>"\n'
     "}}\n"
 )
 
@@ -125,6 +139,7 @@ class GeminiValidator:
         self,
         expected_label: str,
         label_definition: Optional[Dict[str, Any]],
+        annotation_data: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Build prompt with guidelines context if available.
@@ -132,10 +147,38 @@ class GeminiValidator:
         Args:
             expected_label: The expected label for the crop
             label_definition: Dict with 'definition', 'key_characteristics', etc.
+            annotation_data: Optional dict with full annotation data (category info, attributes, etc.)
             
         Returns:
             Formatted prompt string
         """
+        # Build annotation context string
+        annotation_context = ""
+        if annotation_data:
+            context_parts = []
+            
+            # Add category information
+            if "category_name" in annotation_data:
+                context_parts.append(f"Category: {annotation_data['category_name']}")
+            
+            # Add attributes/questions if present
+            if "attributes" in annotation_data and annotation_data["attributes"]:
+                context_parts.append("Annotation Attributes:")
+                for attr in annotation_data["attributes"]:
+                    if isinstance(attr, dict):
+                        attr_name = attr.get("name", "Unknown")
+                        attr_value = attr.get("value", "N/A")
+                        context_parts.append(f"  - {attr_name}: {attr_value}")
+                    else:
+                        context_parts.append(f"  - {attr}")
+            
+            # Add any other annotation metadata
+            if "metadata" in annotation_data:
+                context_parts.append(f"Additional metadata: {annotation_data['metadata']}")
+            
+            if context_parts:
+                annotation_context = "📊 ANNOTATION DATA:\n" + "\n".join(context_parts) + "\n\n"
+        
         if label_definition:
             characteristics = "\n".join(
                 f"- {c}" for c in label_definition.get("key_characteristics", [])
@@ -144,8 +187,12 @@ class GeminiValidator:
                 expected_label=expected_label,
                 definition=label_definition.get("definition", "Not specified"),
                 characteristics=characteristics or "Not specified",
+                annotation_context=annotation_context,
             )
-        return self.prompt_template.format(expected_label=expected_label)
+        return self.prompt_template.format(
+            expected_label=expected_label,
+            annotation_context=annotation_context,
+        )
 
     def _build_request_body(
         self,
@@ -153,6 +200,7 @@ class GeminiValidator:
         expected_label: str,
         guidelines: Optional[str],
         label_definitions: Optional[Dict[str, Any]] = None,
+        annotation_data: Optional[Dict[str, Any]] = None,
     ) -> tuple[Dict[str, Any], str]:
         """Build request body and return both body and the prompt text for logging."""
         # Check if we have a structured label definition
@@ -165,9 +213,39 @@ class GeminiValidator:
         
         # Build appropriate prompt
         if label_def:
-            prompt = self._build_guidelines_prompt(expected_label, label_def)
+            prompt = self._build_guidelines_prompt(expected_label, label_def, annotation_data)
         else:
-            prompt = self.prompt_template.format(expected_label=expected_label)
+            # Build annotation context for non-guidelines prompts too
+            annotation_context = ""
+            if annotation_data:
+                context_parts = []
+                
+                # Add category information
+                if "category_name" in annotation_data:
+                    context_parts.append(f"Category: {annotation_data['category_name']}")
+                
+                # Add attributes/questions if present
+                if "attributes" in annotation_data and annotation_data["attributes"]:
+                    context_parts.append("Annotation Attributes:")
+                    for attr in annotation_data["attributes"]:
+                        if isinstance(attr, dict):
+                            attr_name = attr.get("name", "Unknown")
+                            attr_value = attr.get("value", "N/A")
+                            context_parts.append(f"  - {attr_name}: {attr_value}")
+                        else:
+                            context_parts.append(f"  - {attr}")
+                
+                # Add any other annotation metadata
+                if "metadata" in annotation_data:
+                    context_parts.append(f"Additional metadata: {annotation_data['metadata']}")
+                
+                if context_parts:
+                    annotation_context = "📊 ANNOTATION DATA:\n" + "\n".join(context_parts) + "\n\n"
+            
+            prompt = self.prompt_template.format(
+                expected_label=expected_label,
+                annotation_context=annotation_context,
+            )
             if guidelines:
                 prompt += f"\n\nGuidelines:\n{guidelines.strip()}"
 
@@ -270,6 +348,7 @@ class GeminiValidator:
         expected_label: str,
         guidelines: Optional[str] = None,
         label_definitions: Optional[Dict[str, Any]] = None,
+        annotation_data: Optional[Dict[str, Any]] = None,
         log_prompt: bool = False,
     ) -> GeminiResponse:
         """
@@ -281,12 +360,18 @@ class GeminiValidator:
             guidelines: Optional raw text guidelines (legacy)
             label_definitions: Optional dict mapping label names to their definitions
                               Format: {label_name: {"definition": str, "key_characteristics": [str], ...}}
+            annotation_data: Optional dict with full annotation data including:
+                           - category_name: str
+                           - attributes: list of annotation attributes/questions
+                           - metadata: any additional annotation metadata
             log_prompt: If True, log the prompt being sent to Gemini
         
         Returns:
             GeminiResponse with prediction, confidence, and rationale
         """
-        body, prompt = self._build_request_body(crop_bytes, expected_label, guidelines, label_definitions)
+        body, prompt = self._build_request_body(
+            crop_bytes, expected_label, guidelines, label_definitions, annotation_data
+        )
         
         # Log the prompt if requested
         if log_prompt:
@@ -325,7 +410,7 @@ class GeminiValidator:
         Validate a batch of crops.
         
         Args:
-            items: Iterable of dicts with 'crop_bytes' and 'expected_label'
+            items: Iterable of dicts with 'crop_bytes', 'expected_label', and optionally 'annotation_data'
             guidelines: Optional raw text guidelines (legacy)
             label_definitions: Optional dict mapping label names to their definitions
         
@@ -336,8 +421,11 @@ class GeminiValidator:
         for item in items:
             crop_bytes = item["crop_bytes"]
             expected_label = item["expected_label"]
+            annotation_data = item.get("annotation_data")
             responses.append(
-                self.validate_crop(crop_bytes, expected_label, guidelines, label_definitions)
+                self.validate_crop(
+                    crop_bytes, expected_label, guidelines, label_definitions, annotation_data
+                )
             )
         return responses
 

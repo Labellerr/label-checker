@@ -34,7 +34,7 @@ Open your browser to: `http://localhost:7860`
 ## Step 4: Validate Annotations
 
 1. **Enter credentials** in the UI
-2. **Select statuses** (e.g., "accepted")
+2. **Select statuses** (e.g., "completed")
 3. **Click "Fetch & Run QC"**
 4. **Review results** and low-confidence annotations
 

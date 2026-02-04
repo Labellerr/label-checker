@@ -287,11 +287,32 @@ class QCValidationWorkflow:
                         logger.info(f"  Definition: {label_def.get('definition', 'N/A')}")
                         logger.info(f"  Visual features: {len(label_def.get('key_characteristics', []))}")
                     
+                    # Build annotation data for validation
+                    annotation_data = {
+                        "category_name": category.name,
+                        "category_id": category.id,
+                    }
+                    
+                    # Add annotation attributes if present
+                    if hasattr(annotation, 'attributes') and annotation.attributes:
+                        annotation_data["attributes"] = annotation.attributes
+                    
+                    # Add category-level attributes if present
+                    if hasattr(category, 'attributes') and category.attributes:
+                        annotation_data["category_attributes"] = category.attributes
+                    
+                    # Add Labellerr-specific IDs if present
+                    if hasattr(annotation, 'labellerr_answer_id') and annotation.labellerr_answer_id:
+                        annotation_data["labellerr_answer_id"] = annotation.labellerr_answer_id
+                    if hasattr(category, 'labellerr_question_id') and category.labellerr_question_id:
+                        annotation_data["labellerr_question_id"] = category.labellerr_question_id
+                    
                     response = validator.validate_crop(
                         crop_bytes=crop_bytes,
                         expected_label=category.name,
                         guidelines=None,
                         label_definitions=guidelines_dict,
+                        annotation_data=annotation_data,
                         log_prompt=log_this_prompt,
                     )
                     confidence = response.confidence

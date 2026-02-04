@@ -1042,7 +1042,7 @@ Multiple Validation Runs
 ### External APIs
 1. **Gemini API**
    - Endpoint: `https://generativelanguage.googleapis.com/v1beta`
-   - Models: `gemini-2.0-flash-exp`, `gemini-3-flash-preview`
+   - Models: `gemini-3-flash-preview`
    - Rate Limits: Based on API tier
    - Authentication: API key in header
 

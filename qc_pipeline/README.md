@@ -323,7 +323,7 @@ from qc_pipeline.gemini_validator import (
 
 **Example:**
 ```python
-validator = create_demo_validator(api_key="...", model_name="gemini-2.0-flash-exp")
+validator = create_demo_validator(api_key="...", model_name="gemini-3.0-flash-exp")
 response = validator.validate_crop(
     crop_bytes=crop_bytes,
     expected_label="cat",
@@ -459,7 +459,7 @@ python -m qc_pipeline.run_validation \
   --output results.json \
   --guidelines guidelines.txt \
   --padding 8 \
-  --model-name gemini-2.0-flash-exp
+  --model-name gemini-3.0-flash-exp
 ```
 
 ---
@@ -513,7 +513,7 @@ CropConfig(
 ```python
 GeminiValidator(
     api_key="...",
-    model_name="gemini-2.0-flash-exp",
+    model_name="gemini-3.0-flash-exp",
     temperature=0.1,                     # Lower = more deterministic
     max_retries=3,
     timeout_seconds=30,

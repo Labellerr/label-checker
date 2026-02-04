@@ -89,24 +89,82 @@ class LabellerrFetcher:
         
         print(f"Creating export for statuses: {statuses}...")
         export = self.project.create_export(export_config)
-        print(f"Export created with ID: {export.report_id}")
+        report_id = export.report_id
+        print(f"Export created with ID: {report_id}")
         
-        # Poll until export is ready
+        # Poll until export is ready with detailed debugging
         print(f"Waiting for export to complete (timeout: {timeout}s, poll interval: {poll_interval}s)...")
-        result = export.status(interval=poll_interval, timeout=timeout)
+        print("(This may take a few minutes depending on the number of annotations...)")
         
-        # Check if export completed successfully
-        status_list = result.get("status", [])
-        if not status_list:
-            raise ValueError("Export status response is empty")
+        start_time = time.time()
+        last_status = None
+        poll_count = 0
+        export_status = None
         
-        export_status = status_list[0]
-        if not export_status.get("is_completed"):
-            raise ValueError(f"Export failed: {export_status}")
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                raise TimeoutError(f"Export timed out after {timeout}s. Last status: {last_status}")
+            
+            poll_count += 1
+            try:
+                # Use the project's check_export_status method directly for better debugging
+                result = self.project.check_export_status([report_id])
+                
+                print(f"\n[Poll #{poll_count}] Elapsed: {elapsed:.1f}s")
+                
+                # The API returns data in "response" key, not "status" key
+                # Try both keys for compatibility
+                status_list = result.get("status", []) or result.get("response", [])
+                
+                if status_list:
+                    # Find our export in the status list
+                    for status_item in status_list:
+                        if status_item.get("report_id") == report_id:
+                            export_status = status_item
+                            last_status = export_status
+                            break
+                    
+                    if export_status:
+                        is_completed = export_status.get("is_completed", False)
+                        export_state = export_status.get("export_status", "unknown")
+                        download_url = export_status.get("download_url")
+                        
+                        print(f"  export_status: {export_state}")
+                        print(f"  is_completed: {is_completed}")
+                        print(f"  download_url: {download_url is not None}")
+                        
+                        # Check for failure
+                        if export_state.lower() == "failed":
+                            raise ValueError(f"Export failed: {export_status}")
+                        
+                        # Check for success (both is_completed=True AND export_status="created")
+                        if is_completed and export_state.lower() == "created" and download_url:
+                            print(f"\n✓ Export completed after {elapsed:.1f}s")
+                            break
+                        elif is_completed and not download_url:
+                            print(f"  Warning: Export marked complete but no download URL yet...")
+                    else:
+                        print(f"  Report ID {report_id} not found in status list")
+                else:
+                    print(f"  No status/response list in response: {list(result.keys())}")
+                    last_status = result
+                
+            except ValueError:
+                raise  # Re-raise export failures
+            except Exception as e:
+                print(f"\n[Poll #{poll_count}] Error checking status: {type(e).__name__}: {e}")
+            
+            # Wait before next poll
+            time.sleep(poll_interval)
         
+        # Extract download URL
+        if not export_status:
+            raise ValueError(f"Export status not found for report_id: {report_id}")
+            
         download_url = export_status.get("download_url")
         if not download_url:
-            raise ValueError("No download URL in export response")
+            raise ValueError(f"No download URL in export response: {export_status}")
         
         # Extract the actual URL string if it's a dictionary
         if isinstance(download_url, dict):

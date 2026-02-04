@@ -12,6 +12,8 @@ class Category:
     id: int
     name: str
     supercategory: Optional[str] = None
+    attributes: Optional[List[Dict]] = None  # Category-level attributes/questions schema
+    labellerr_question_id: Optional[str] = None  # Labellerr-specific question ID
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ class Annotation:
     segmentation: Optional[Sequence[Sequence[float]]] = None
     area: Optional[float] = None
     iscrowd: Optional[int] = None
+    attributes: Optional[List[Dict]] = None  # Annotation questions/attributes from Labellerr
+    labellerr_answer_id: Optional[str] = None  # Labellerr-specific ID
 
     def has_polygon(self) -> bool:
         return bool(self.segmentation)
@@ -95,6 +99,8 @@ def load_coco_dataset(json_path: Path | str) -> CocoDataset:
             id=entry["id"],
             name=entry["name"],
             supercategory=entry.get("supercategory"),
+            attributes=entry.get("attributes"),
+            labellerr_question_id=entry.get("labellerr_question_id"),
         )
         for entry in coco.get("categories", [])
     }
@@ -128,6 +134,8 @@ def load_coco_dataset(json_path: Path | str) -> CocoDataset:
                 segmentation=segmentation,  # type: ignore[arg-type]
                 area=entry.get("area"),
                 iscrowd=entry.get("iscrowd"),
+                attributes=entry.get("attributes"),
+                labellerr_answer_id=entry.get("labellerr_answer_id"),
             )
         )
 

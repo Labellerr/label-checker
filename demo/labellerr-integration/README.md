@@ -6,7 +6,7 @@ Gradio-based UI for validating Labellerr annotations using Gemini AI. Fetch anno
 
 This integration connects Labellerr's annotation platform with the Gemini QC validation pipeline. It allows you to:
 
-1. **Fetch annotations** from Labellerr filtered by status (e.g., "accepted", "review")
+1. **Fetch annotations** from Labellerr filtered by status (e.g., "completed", "reviewer_layer")
 2. **Download images** referenced by those annotations
 3. **Run QC validation** using Gemini AI to verify label accuracy
 4. **Review results** with confidence scores and identify problematic annotations
@@ -83,7 +83,7 @@ The app will launch at `http://localhost:7860`
 In the Gradio UI:
 1. Enter your Labellerr credentials (API Key, Secret, Client ID, Project ID)
 2. Enter your Gemini API key
-3. Select annotation statuses to validate (e.g., "accepted", "client_review")
+3. Select annotation statuses to validate (e.g., "completed", "client_reviewer_layer")
 4. Set max files to process (default: 50)
 5. Set low confidence threshold (default: 0.5)
 
@@ -101,11 +101,9 @@ Click **"Fetch & Run QC"** to start the process. The app will:
 
 Available status filters:
 
-- **`review`** - Annotations in review
-- **`r_assigned`** - Review assigned
-- **`client_review`** - Client review status
-- **`cr_assigned`** - Client review assigned
-- **`accepted`** - Accepted/completed annotations
+- **`reviewer_layer`** - Annotations at the reviewer layer
+- **`client_reviewer_layer`** - Annotations at the client reviewer layer
+- **`completed`** - Completed/accepted annotations
 
 Select one or more statuses to validate.
 
@@ -135,7 +133,7 @@ The `qc_results.json` contains:
 {
   "metadata": {
     "export_id": "...",
-    "statuses": ["accepted"],
+    "statuses": ["completed"],
     "total_images": 25,
     "coco_json": "...",
     "images_dir": "..."
@@ -181,16 +179,16 @@ The Gradio interface displays:
 
 ## Example Usage
 
-### Validate Only Accepted Annotations
+### Validate Only Completed Annotations
 
-1. Select status: `["accepted"]`
+1. Select status: `["completed"]`
 2. Set max files: `100`
 3. Run validation
 4. Review annotations with confidence < 0.5
 
 ### QC Client Review Annotations
 
-1. Select statuses: `["client_review", "cr_assigned"]`
+1. Select statuses: `["client_reviewer_layer"]`
 2. Set confidence threshold: `0.7` (stricter)
 3. Run validation
 4. Focus on low confidence results for re-review
@@ -349,7 +347,7 @@ sequenceDiagram
         SDK->>API: Authenticate
         API-->>SDK: Auth Token
         
-        Fetcher->>SDK: create_export(statuses=['accepted'])
+        Fetcher->>SDK: create_export(statuses=['completed'])
         SDK->>API: POST /export (with status filter)
         API-->>SDK: Export ID
         
@@ -491,7 +489,7 @@ export_config = schemas.CreateExportParams(
     export_name="QC Export",
     export_description="Export for QC validation",
     export_format="json",
-    statuses=["accepted", "client_review"],  # Filter by status
+    statuses=["completed", "client_reviewer_layer"],  # Filter by status
     export_destination=schemas.ExportDestination.LOCAL
 )
 export = project.create_export(export_config)

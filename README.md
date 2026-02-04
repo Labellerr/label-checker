@@ -1,134 +1,183 @@
 # Agentic Label Checker
 
-An intelligent, multi-agent system that validates image annotations using AI. The system automatically extracts annotation guidelines and uses them to verify if your bounding boxes and polygons are correctly labeled.
+AI-powered annotation validation using multi-agent workflows. Validates image annotations with Gemini, OpenAI, or Anthropic vision models.
 
 ## Quick Start
 
-### 1. Install Dependencies
-
 ```bash
+# 1. Install
 pip install -r requirements.txt
+
+# 2. Launch
+python run_qc_app.py
+
+# 3. Open http://localhost:7860
 ```
-
-### 2. Prepare Your Data
-
-Create a `data` folder with:
-- `data/images/` - Your images (JPEG/PNG)
-- `data/annotations.json` - COCO-format annotations
-
-### 3. Get a Gemini API Key
-
-Get your free API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-
-### 4. Run the Demo
-
-```bash
-export GEMINI_API_KEY="your-api-key-here"
-python demo/run_demo.py
-```
-
-This will:
-- Load your images and annotations
-- Crop each annotated object
-- Ask Gemini to verify the label
-- Generate a report with confidence scores
-
-**Results** are saved to `demo/output/demo_results.json`
-
-## Testing Without Your Data
-
-Run the unit tests to verify everything works:
-
-```bash
-pytest
-```
-
-This tests the cropping and JSON parsing logic without calling the Gemini API (free and fast).
-
-## Advanced Usage
-
-For production use with custom settings:
-
-```bash
-export GEMINI_API_KEY="your-api-key"
-python -m qc_pipeline.run_validation \
-  --images-dir data/images \
-  --coco-json data/annotations.json \
-  --output results.json \
-  --padding 8
-```
-
-**Options:**
-- `--model-name` - Change AI model (default: `gemini-3-flash-preview`)
-- `--disable-polygon-mask` - Use rectangular crops instead of masked polygons
-- `--guidelines` - Path to text file with labeling guidelines
 
 ## How It Works
 
-The system uses a multi-agent workflow to intelligently validate annotations:
-
-```mermaid
-graph TD
-    Start[Upload Annotations] --> CheckPDF{Guidelines PDF Provided?}
-    CheckPDF -->|Yes| Agent1[Agent 1: Guidelines Extractor]
-    CheckPDF -->|No| Agent2[Agent 2: Validator]
-    
-    Agent1 --> ExtractText[Extract PDF Text]
-    ExtractText --> ParseVisual[Parse Visual Characteristics]
-    ParseVisual --> StoreContext[Store in Memory]
-    StoreContext --> Agent2
-    
-    Agent2 --> LoadImages[Load Images & Annotations]
-    LoadImages --> CropLoop[For Each Annotation]
-    CropLoop --> GetContext[Retrieve Guidelines from Memory]
-    GetContext --> BuildPrompt[Build Context-Aware Prompt]
-    BuildPrompt --> ValidateAI[Validate with AI]
-    ValidateAI --> SaveResult[Save Result]
-    SaveResult --> CropLoop
-    CropLoop --> Report[Generate Report]
-    
-    style Agent1 fill:#e1f5ff
-    style Agent2 fill:#fff4e1
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│    ┌──────────┐      ┌──────────────┐      ┌──────────────┐            │
+│    │  Upload  │      │  Guidelines  │      │     AI       │            │
+│    │  Data    │─────▶│  Extraction  │─────▶│  Validation  │            │
+│    └──────────┘      └──────────────┘      └──────────────┘            │
+│         │                   │                     │                     │
+│         │                   │                     │                     │
+│         ▼                   ▼                     ▼                     │
+│    ┌──────────┐      ┌──────────────┐      ┌──────────────┐            │
+│    │ COCO JSON│      │ Label        │      │ Results:     │            │
+│    │ + Images │      │ Definitions  │      │ • Matches    │            │
+│    └──────────┘      └──────────────┘      │ • Mismatches │            │
+│                                            │ • Confidence │            │
+│                                            └──────────────┘            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Agent 1: Guidelines Extractor
-- Automatically processes annotation guidelines PDF
-- Extracts visual characteristics (shape, color, texture, size)
-- Stores category definitions in memory
-- Triggers automatically when PDF is uploaded
+## Features
 
-### Agent 2: Validator
-- Loads guidelines from shared memory
-- Crops each annotated object
-- Builds context-aware prompts with visual characteristics
-- Validates labels with AI using extracted guidelines
-- Reports confidence scores and mismatches
+| Feature | Description |
+|---------|-------------|
+| **Multi-Provider** | Gemini, OpenAI, Anthropic |
+| **Multi-Source** | File upload or Labellerr platform |
+| **Guidelines** | Extract label definitions from PDF |
+| **Web UI** | Gradio interface at localhost:7860 |
+| **Python API** | Full programmatic access |
 
-**Key Features:**
-- **Automatic Context**: Guidelines extracted and applied automatically
-- **Visual Focus**: Emphasizes shape, color, texture, and appearance
-- **Stateful Memory**: Context flows between agents seamlessly
-- **Traceable**: Full logging of prompts and AI responses
+## Supported Models
+
+| Provider | Models |
+|----------|--------|
+| **Gemini** | gemini-3-flash-preview, gemini-3-pro-preview, gemini-2.5-flash |
+| **OpenAI** | gpt-5-mini-2025-08-07, gpt-5.2-pro-2025-12-11, gpt-5.2-2025-12-11 |
+| **Anthropic** | claude-opus-4-5-20251101, claude-haiku-4-5-20251001, claude-sonnet-4-5-20250929 |
+
+## Python API
+
+```python
+from qc_pipeline import QCValidationWorkflow, create_validator
+
+# Create any validator
+validator = create_validator(
+    provider="gemini",      # or "openai", "anthropic"
+    api_key="your-key",
+    model_name="gemini-3-flash-preview",
+)
+
+# Run validation
+workflow = QCValidationWorkflow(output_dir="output", validator=validator)
+state, results, summary = workflow.run(
+    coco_json_path="annotations.json",
+    images_dir="images/",
+)
+
+print(f"Accuracy: {summary.matches / summary.gemini_validations * 100:.1f}%")
+```
+
+## Workflow Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Two-Agent LangGraph Workflow                     │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │                        Shared State                              │   │
+│   │   pdf_text │ guidelines │ categories │ results │ errors         │   │
+│   └─────────────────────────────────────────────────────────────────┘   │
+│          │                                        ▲                     │
+│          ▼                                        │                     │
+│   ┌────────────────────┐              ┌────────────────────┐           │
+│   │  Guidelines Agent  │              │  Validation Agent  │           │
+│   │                    │              │                    │           │
+│   │  • Read PDF        │─────────────▶│  • Load COCO       │           │
+│   │  • Extract labels  │              │  • Crop objects    │           │
+│   │  • Store in state  │              │  • Call AI model   │           │
+│   │                    │              │  • Compare labels  │           │
+│   │  [Optional]        │              │  • Save results    │           │
+│   └────────────────────┘              └────────────────────┘           │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+## Project Structure
+
+```
+label-checker/
+├── run_qc_app.py              # Launch web UI
+├── requirements.txt           # Dependencies
+│
+├── qc_pipeline/               # Core package
+│   ├── app.py                 # Gradio web interface
+│   ├── qc_workflow.py         # Main orchestrator
+│   ├── langgraph_validator.py # State machine
+│   │
+│   ├── validators/            # AI providers
+│   │   ├── gemini.py
+│   │   ├── openai.py
+│   │   └── anthropic.py
+│   │
+│   ├── fetchers/              # Data sources
+│   │   ├── local.py           # File upload
+│   │   └── labellerr.py       # Platform SDK
+│   │
+│   ├── data_loader.py         # COCO parser
+│   ├── image_utils.py         # Crop generator
+│   └── guidelines_extractor.py# PDF processor
+│
+└── demo/                      # Example scripts
+    └── labellerr-integration/ # Legacy Labellerr demo
+```
 
 ## Requirements
 
 - Python 3.10+
-- Gemini API key
-- Images in JPEG/PNG format
-- Annotations in COCO JSON format
+- At least one AI provider API key
+- COCO format annotations
 
-## 📚 Documentation
+**Install all dependencies:**
+```bash
+pip install -r requirements.txt
+```
 
-### Core Documentation
-- **[System Architecture](ARCHITECTURE.md)** - Complete architectural overview with diagrams
-- **[QC Pipeline](qc_pipeline/README.md)** - Detailed module documentation and architecture
-- **[Labellerr Integration](demo/labellerr-integration/README.md)** - Integration guide with workflows
-- [Feasibility Assessment](docs/gemini_qc_feasibility.md)
-- [Validation Flow Details](docs/gemini_qc_flow.md)
+**Provider-specific:**
+```bash
+pip install langchain-google-genai   # Gemini
+pip install langchain-openai         # OpenAI
+pip install langchain-anthropic      # Anthropic
+pip install labellerr                # Labellerr platform
+```
 
-### Quick Navigation
-| Component | Description | Documentation |
-|-----------|-------------|---------------|
-| 🏗️ **System Overview** | High-level architecture, data flows, design decisions | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| 🔧 **QC Pipeline** | Core validation engine, modules, API reference | [qc_pipeline/README.md](qc_pipeline/README.md) |
-| 🔌 **Labellerr Integration** | Platform integration, workflows, setup guide | [demo/labellerr-integration/README.md](demo/labellerr-integration/README.md) |
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [QC Pipeline README](qc_pipeline/README.md) | Package architecture & API |
+| [Architecture](ARCHITECTURE.md) | System design & diagrams |
+| [Labellerr Integration](demo/labellerr-integration/README.md) | Platform setup guide |
+
+## Example Output
+
+```
+✅ Validation Complete
+
+## Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Annotations | 100 |
+| Validations | 100 |
+| Matches | 92 (92.0%) |
+| Mismatches | 8 |
+| Avg Confidence | 0.894 |
+
+### Issues Found
+⚠️ cat → dog (0.95) - "Clear canine features..."
+⚠️ chair → table (0.87) - "Four legs with flat surface..."
+```
+
+## License
+
+MIT

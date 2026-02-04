@@ -5,13 +5,14 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 
 from qc_pipeline.data_loader import CocoDataset, load_coco_dataset
 from qc_pipeline.image_utils import CropConfig, crop_annotation, image_to_png_bytes
 from qc_pipeline.langgraph_validator import QCValidationState, build_guidelines_graph
+from qc_pipeline.validators.base import BaseValidator
 
 logger = logging.getLogger(__name__)
 
@@ -54,23 +55,62 @@ class QCValidationWorkflow:
     2. ValidationAgent: Validates crops using guidelines from shared state
     """
     
-    def __init__(self, gemini_api_key: str, output_dir: Path):
+    def __init__(
+        self,
+        output_dir: Path,
+        validator: Optional[BaseValidator] = None,
+        gemini_api_key: Optional[str] = None,
+    ):
         """
         Initialize the workflow.
         
         Args:
-            gemini_api_key: Google API key for Gemini
             output_dir: Directory to save outputs
+            validator: Optional validator instance to use for validation.
+                      If not provided, will create a default Gemini validator using gemini_api_key.
+            gemini_api_key: Google API key for Gemini (legacy, used if validator not provided)
         """
-        self.gemini_api_key = gemini_api_key
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Store validator or API key for lazy initialization
+        self._validator = validator
+        self._gemini_api_key = gemini_api_key
+        
+        # Validate that we have at least one way to create a validator
+        if validator is None and gemini_api_key is None:
+            raise ValueError("Either validator or gemini_api_key must be provided")
         
         # Build the LangGraph workflow
         self.graph = build_guidelines_graph()
         
         # Setup logging
         self._setup_logging()
+    
+    @property
+    def validator(self) -> BaseValidator:
+        """Get or create the validator instance."""
+        if self._validator is None:
+            # Create default Gemini validator for backward compatibility
+            from qc_pipeline.gemini_validator import GeminiValidator, DEMO_PROMPT_TEMPLATE
+            self._validator = GeminiValidator(
+                api_key=self._gemini_api_key,
+                model_name="gemini-2.0-flash",
+                prompt_template=DEMO_PROMPT_TEMPLATE,
+                temperature=0.1,
+                enable_code_execution=True,
+            )
+        return self._validator
+    
+    @property
+    def gemini_api_key(self) -> Optional[str]:
+        """Get API key for guidelines extraction (backward compatibility)."""
+        if self._gemini_api_key:
+            return self._gemini_api_key
+        # Try to extract from validator if it's a Gemini validator
+        if hasattr(self._validator, 'api_key'):
+            return self._validator.api_key
+        return None
     
     def _setup_logging(self):
         """Setup file logging for guidelines and validation prompts."""
@@ -203,21 +243,13 @@ class QCValidationWorkflow:
         confidence_threshold: float,
     ) -> Tuple[List[ValidationResult], ValidationSummary]:
         """
-        Validate annotations using the ValidationAgent.
+        Validate annotations using the configured validator.
         
-        This method processes each crop and validates it with Gemini,
+        This method processes each crop and validates it with the validator,
         using guidelines from state if available.
         """
-        # Import here to avoid circular imports
-        from qc_pipeline.gemini_validator import GeminiValidator, DEMO_PROMPT_TEMPLATE
-        
-        validator = GeminiValidator(
-            api_key=self.gemini_api_key,
-            model_name="gemini-3-flash-preview",
-            prompt_template=DEMO_PROMPT_TEMPLATE,
-            temperature=0.1,  # Strict, deterministic responses
-            enable_code_execution=True,  # Enable code execution for counting/analysis
-        )
+        # Use the configured validator
+        validator = self.validator
         
         crops_dir = self.output_dir / "crops"
         crops_dir.mkdir(exist_ok=True)

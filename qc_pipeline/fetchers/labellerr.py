@@ -7,6 +7,7 @@ using the SDK, filtered by annotation status.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 import uuid
@@ -15,19 +16,67 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 
-# Add SDK path - adjust this based on where SDK is installed
-SDK_PATH = Path(__file__).parent.parent.parent.parent / "SDKPython-1"
-if SDK_PATH.exists():
-    sys.path.insert(0, str(SDK_PATH))
+from qc_pipeline.fetchers.base import FetchResult
 
+logger = logging.getLogger(__name__)
+
+# Add SDK path - check multiple possible locations
+_SDK_PATHS = [
+    Path(__file__).parent.parent.parent.parent / "SDKPython-1",  # From qc_pipeline/fetchers/
+    Path(__file__).parent.parent.parent / "SDKPython-1",  # Alternative
+    Path.home() / "SDKPython-1",  # Home directory
+]
+
+for sdk_path in _SDK_PATHS:
+    if sdk_path.exists():
+        sys.path.insert(0, str(sdk_path))
+        logger.debug(f"Added Labellerr SDK path: {sdk_path}")
+        break
+
+# Try to import Labellerr SDK
+_LABELLERR_AVAILABLE = False
 try:
     from labellerr import LabellerrClient
     from labellerr.core import schemas
     from labellerr.core.projects import LabellerrProject
-except ImportError as e:
-    raise ImportError(
-        f"Failed to import Labellerr SDK. Make sure SDK is installed or path is correct. Error: {e}"
-    )
+    _LABELLERR_AVAILABLE = True
+except ImportError:
+    LabellerrClient = None
+    schemas = None
+    LabellerrProject = None
+
+
+def is_labellerr_available() -> bool:
+    """Check if Labellerr SDK is available."""
+    return _LABELLERR_AVAILABLE
+
+
+# Status mapping from UI-friendly names to API status names
+STATUS_MAPPING = {
+    "reviewer_layer": ["review", "r_assigned"],
+    "client_reviewer_layer": ["client_review", "cr_assigned"],
+    "completed": ["accepted"],
+}
+
+
+def map_statuses_to_api(ui_statuses: List[str]) -> List[str]:
+    """
+    Convert UI-friendly status names to Labellerr API status names.
+    
+    Args:
+        ui_statuses: List of UI status names (e.g., ["reviewer_layer", "completed"])
+        
+    Returns:
+        List of API status names (e.g., ["review", "r_assigned", "accepted"])
+    """
+    api_statuses = []
+    for status in ui_statuses:
+        if status in STATUS_MAPPING:
+            api_statuses.extend(STATUS_MAPPING[status])
+        else:
+            # Pass through unknown statuses (backwards compatibility)
+            api_statuses.append(status)
+    return api_statuses
 
 
 class LabellerrFetcher:
@@ -49,10 +98,72 @@ class LabellerrFetcher:
             client_id: Labellerr client ID
             project_id: Labellerr project ID
         """
+        if not _LABELLERR_AVAILABLE:
+            raise ImportError(
+                "Labellerr SDK is not installed. Please install it to use Labellerr integration."
+            )
+        
         self.client = LabellerrClient(api_key, api_secret, client_id)
         self.client_id = client_id
         self.project_id = project_id
         self.project = LabellerrProject(self.client, project_id=project_id)
+    
+    def fetch_data(
+        self,
+        output_dir: Path,
+        statuses: List[str],
+        export_timeout: int = 900,
+        poll_interval: float = 3.0,
+    ) -> FetchResult:
+        """
+        Fetch annotation data and images from Labellerr.
+        
+        Args:
+            output_dir: Directory to save fetched data
+            statuses: List of annotation statuses to filter
+            export_timeout: Maximum time to wait for export completion
+            poll_interval: Time between status checks
+            
+        Returns:
+            FetchResult with paths to COCO JSON and images directory
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Map UI statuses to API statuses
+        api_statuses = map_statuses_to_api(statuses)
+        
+        # Create and download export
+        coco_json_path, export_metadata = self.create_and_download_export(
+            statuses=api_statuses,
+            output_dir=output_dir,
+            timeout=export_timeout,
+            poll_interval=poll_interval,
+        )
+        
+        # Download all images referenced in the export
+        downloaded_images = self.download_project_images(
+            coco_json_path=coco_json_path,
+            output_dir=output_dir,
+        )
+        
+        images_dir = output_dir / "images"
+        
+        metadata = {
+            "source": "labellerr",
+            "export_id": export_metadata.get("report_id"),
+            "statuses": statuses,
+            "api_statuses": api_statuses,
+            "total_images": len(downloaded_images),
+            "coco_json": str(coco_json_path),
+            "images_dir": str(images_dir),
+        }
+        
+        return FetchResult(
+            coco_json_path=coco_json_path,
+            images_dir=images_dir,
+            metadata=metadata,
+        )
     
     def create_and_download_export(
         self,
@@ -87,12 +198,15 @@ class LabellerrFetcher:
             export_destination=schemas.ExportDestination.LOCAL,
         )
         
+        logger.info(f"Creating export for statuses: {statuses}...")
         print(f"Creating export for statuses: {statuses}...")
         export = self.project.create_export(export_config)
         report_id = export.report_id
+        logger.info(f"Export created with ID: {report_id}")
         print(f"Export created with ID: {report_id}")
         
         # Poll until export is ready with detailed debugging
+        logger.info(f"Waiting for export to complete (timeout: {timeout}s, poll interval: {poll_interval}s)...")
         print(f"Waiting for export to complete (timeout: {timeout}s, poll interval: {poll_interval}s)...")
         print("(This may take a few minutes depending on the number of annotations...)")
         
@@ -111,7 +225,7 @@ class LabellerrFetcher:
                 # Use the project's check_export_status method directly for better debugging
                 result = self.project.check_export_status([report_id])
                 
-                print(f"\n[Poll #{poll_count}] Elapsed: {elapsed:.1f}s")
+                logger.debug(f"[Poll #{poll_count}] Elapsed: {elapsed:.1f}s")
                 
                 # The API returns data in "response" key, not "status" key
                 # Try both keys for compatibility
@@ -130,9 +244,7 @@ class LabellerrFetcher:
                         export_state = export_status.get("export_status", "unknown")
                         download_url = export_status.get("download_url")
                         
-                        print(f"  export_status: {export_state}")
-                        print(f"  is_completed: {is_completed}")
-                        print(f"  download_url: {download_url is not None}")
+                        logger.debug(f"  export_status: {export_state}, is_completed: {is_completed}")
                         
                         # Check for failure
                         if export_state.lower() == "failed":
@@ -140,20 +252,21 @@ class LabellerrFetcher:
                         
                         # Check for success (both is_completed=True AND export_status="created")
                         if is_completed and export_state.lower() == "created" and download_url:
+                            logger.info(f"Export completed after {elapsed:.1f}s")
                             print(f"\n✓ Export completed after {elapsed:.1f}s")
                             break
                         elif is_completed and not download_url:
-                            print(f"  Warning: Export marked complete but no download URL yet...")
+                            logger.debug("Export marked complete but no download URL yet...")
                     else:
-                        print(f"  Report ID {report_id} not found in status list")
+                        logger.debug(f"Report ID {report_id} not found in status list")
                 else:
-                    print(f"  No status/response list in response: {list(result.keys())}")
+                    logger.debug(f"No status/response list in response: {list(result.keys())}")
                     last_status = result
                 
             except ValueError:
                 raise  # Re-raise export failures
             except Exception as e:
-                print(f"\n[Poll #{poll_count}] Error checking status: {type(e).__name__}: {e}")
+                logger.warning(f"[Poll #{poll_count}] Error checking status: {type(e).__name__}: {e}")
             
             # Wait before next poll
             time.sleep(poll_interval)
@@ -172,7 +285,8 @@ class LabellerrFetcher:
             if not download_url:
                 raise ValueError("No URL found in download_url dictionary")
         
-        print(f"Export completed. Downloading from: {download_url}")
+        logger.info(f"Downloading export from: {download_url[:50]}...")
+        print(f"Export completed. Downloading...")
         
         # Download the export file
         response = requests.get(download_url, timeout=60)
@@ -182,6 +296,7 @@ class LabellerrFetcher:
         coco_json_path = output_dir / "annotations.json"
         coco_json_path.write_bytes(response.content)
         
+        logger.info(f"Export downloaded to: {coco_json_path}")
         print(f"Export downloaded to: {coco_json_path}")
         
         return coco_json_path, export_status
@@ -206,7 +321,7 @@ class LabellerrFetcher:
             if image_id is not None:
                 image_ids.add(image_id)
         
-        print(f"Found {len(image_ids)} unique images referenced in annotations")
+        logger.info(f"Found {len(image_ids)} unique images referenced in annotations")
         return image_ids
     
     def _get_file_signed_url(self, file_id: str) -> Optional[str]:
@@ -223,13 +338,11 @@ class LabellerrFetcher:
             unique_id = str(uuid.uuid4())
             
             # Use the correct endpoint for getting signed URLs
-            # client_id must be in query params (as per team requirement)
             url = f"https://api.labellerr.com/cdn-web/files_links?project_id={self.project_id}&client_id={self.client_id}&uuid={unique_id}"
             
             payload = json.dumps({"file_ids": [file_id]})
             
             # Make POST request with the file_ids in the body
-            # SDK will automatically add api_key, api_secret, client_id to headers
             response = self.client.make_request(
                 "POST", 
                 url, 
@@ -239,25 +352,20 @@ class LabellerrFetcher:
             )
             
             # Extract the signed URL from response
-            # Actual format: {"fileLinks": [{"file_id": "...", "url": "..."}]}
             if isinstance(response, dict):
-                # Try different possible response structures (camelCase and snake_case)
                 file_links = (response.get("fileLinks") or 
                              response.get("file_links") or 
                              response.get("response", {}).get("fileLinks") or
                              response.get("response", {}).get("file_links"))
                 
                 if file_links and len(file_links) > 0:
-                    # The URL is in the 'url' field, not 'signed_url'
                     signed_url = file_links[0].get("url") or file_links[0].get("signed_url") or file_links[0].get("link")
                     if signed_url:
                         return signed_url
             
             return None
         except Exception as e:
-            print(f"(API error getting signed URL: {e})")
-            import traceback
-            traceback.print_exc()
+            logger.warning(f"API error getting signed URL: {e}")
             return None
     
     def download_project_images(
@@ -288,6 +396,7 @@ class LabellerrFetcher:
                            "Make sure export_format is set to 'coco_json'")
         
         images_info = coco_data.get("images", [])
+        logger.info(f"Downloading {len(images_info)} images...")
         print(f"Downloading {len(images_info)} images...")
         
         downloaded_images = {}
@@ -310,13 +419,13 @@ class LabellerrFetcher:
                     continue
             
             if not image_url:
+                logger.warning(f"No URL for image {image_id}, skipping")
                 print(f"  [{idx}/{len(images_info)}] Warning: No URL for image {image_id}, skipping")
                 continue
             
             # Download image
             try:
-                if "Fetching" not in locals().get('last_msg', ''):
-                    print(f"  [{idx}/{len(images_info)}] Downloading {file_name}...", end=" ")
+                print(f"  [{idx}/{len(images_info)}] Downloading {file_name}...", end=" ")
                 response = requests.get(image_url, timeout=30)
                 response.raise_for_status()
                 
@@ -331,10 +440,27 @@ class LabellerrFetcher:
                 print(f"✗ (error: {e})")
                 continue
         
+        logger.info(f"Successfully downloaded {len(downloaded_images)}/{len(images_info)} images")
         print(f"Successfully downloaded {len(downloaded_images)}/{len(images_info)} images")
         return downloaded_images
 
 
+def create_labellerr_fetcher(
+    api_key: str,
+    api_secret: str,
+    client_id: str,
+    project_id: str,
+) -> LabellerrFetcher:
+    """Create a Labellerr fetcher instance."""
+    return LabellerrFetcher(
+        api_key=api_key,
+        api_secret=api_secret,
+        client_id=client_id,
+        project_id=project_id,
+    )
+
+
+# Backwards compatibility function
 def fetch_labellerr_data(
     api_key: str,
     api_secret: str,
@@ -355,37 +481,17 @@ def fetch_labellerr_data(
         project_id: Labellerr project ID
         statuses: List of annotation statuses to filter
         output_dir: Directory to save all outputs
-        export_timeout: Maximum time to wait for export completion in seconds (default: 900 = 15 minutes)
-        poll_interval: Time between status checks in seconds (default: 3.0)
+        export_timeout: Maximum time to wait for export completion in seconds
+        poll_interval: Time between status checks in seconds
         
     Returns:
         Tuple of (annotations_path, images_dir, metadata)
     """
-    fetcher = LabellerrFetcher(api_key, api_secret, client_id, project_id)
-    
-    # Create and download export
-    coco_json_path, export_metadata = fetcher.create_and_download_export(
+    fetcher = create_labellerr_fetcher(api_key, api_secret, client_id, project_id)
+    result = fetcher.fetch_data(
+        output_dir=Path(output_dir),
         statuses=statuses,
-        output_dir=output_dir,
-        timeout=export_timeout,
+        export_timeout=export_timeout,
         poll_interval=poll_interval,
     )
-    
-    # Download all images referenced in the export
-    downloaded_images = fetcher.download_project_images(
-        coco_json_path=coco_json_path,
-        output_dir=output_dir,
-    )
-    
-    images_dir = output_dir / "images"
-    
-    metadata = {
-        "export_id": export_metadata.get("report_id"),
-        "statuses": statuses,
-        "total_images": len(downloaded_images),
-        "coco_json": str(coco_json_path),
-        "images_dir": str(images_dir),
-    }
-    
-    return coco_json_path, images_dir, metadata
-
+    return result.coco_json_path, result.images_dir, result.metadata

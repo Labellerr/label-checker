@@ -8,6 +8,7 @@ download images, and run Gemini validation on the annotations.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from dataclasses import asdict, dataclass
@@ -21,10 +22,69 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from qc_pipeline.data_loader import load_coco_dataset
-from qc_pipeline.gemini_validator import create_demo_validator, GeminiValidator
+from qc_pipeline.gemini_validator import create_demo_validator
 from qc_pipeline.image_utils import CropConfig, crop_annotation, image_to_png_bytes
+from qc_pipeline.pdf_utils import extract_text_from_pdf
+from qc_pipeline.guidelines_extractor import GuidelinesExtractor
+from qc_pipeline.qc_workflow import QCValidationWorkflow
 
 from labellerr_fetcher import fetch_labellerr_data
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Mapping from UI-friendly status names to Labellerr API status names
+# UI shows simplified names, but API requires specific status values
+STATUS_MAPPING = {
+    "reviewer_layer": ["review", "r_assigned"],
+    "client_reviewer_layer": ["client_review", "cr_assigned"],
+    "completed": ["accepted"],
+}
+
+
+def map_statuses_to_api(ui_statuses: List[str]) -> List[str]:
+    """
+    Convert UI-friendly status names to Labellerr API status names.
+    
+    Args:
+        ui_statuses: List of UI status names (e.g., ["reviewer_layer", "completed"])
+        
+    Returns:
+        List of API status names (e.g., ["review", "r_assigned", "accepted"])
+    """
+    api_statuses = []
+    for status in ui_statuses:
+        if status in STATUS_MAPPING:
+            api_statuses.extend(STATUS_MAPPING[status])
+        else:
+            # Pass through unknown statuses (backwards compatibility)
+            api_statuses.append(status)
+    return api_statuses
+
+
+def setup_logging(output_dir: Path) -> Path:
+    """
+    Setup logging to both console and file.
+    
+    Args:
+        output_dir: Directory to save log file
+        
+    Returns:
+        Path to log file
+    """
+    log_file = output_dir / "gemini_prompts.log"
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file, mode='w'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    return log_file
 
 
 @dataclass
@@ -51,6 +111,96 @@ class ValidationSummary:
     low_confidence_annotations: List[Dict]
 
 
+def process_guidelines_pdf(
+    pdf_file,
+    gemini_api_key: str,
+) -> Tuple[str, dict]:
+    """
+    Process uploaded PDF and extract annotation guidelines.
+    
+    Args:
+        pdf_file: Gradio file upload object
+        gemini_api_key: Gemini API key for extraction
+        
+    Returns:
+        Tuple of (status_message, guidelines_dict)
+    """
+    if not pdf_file:
+        return "⚠️ Please upload a PDF file", {}
+    
+    if not gemini_api_key:
+        return "⚠️ Please provide Gemini API key first", {}
+    
+    try:
+        status = "📄 Extracting text from PDF..."
+        print(status)
+        
+        # Extract text from PDF
+        pdf_text = extract_text_from_pdf(Path(pdf_file.name))
+        
+        if not pdf_text.strip():
+            return "❌ Error: PDF appears to be empty or unreadable", {}
+        
+        status = " Extracting label definitions using Gemini..."
+        print(status)
+        
+        # Extract structured guidelines using Gemini
+        extractor = GuidelinesExtractor(api_key=gemini_api_key)
+        guidelines = extractor.extract(pdf_text)
+        
+        # Convert to dict for easy lookup: {label_name: definition_dict}
+        guidelines_dict = {
+            label.label_name.lower(): label.model_dump()
+            for label in guidelines.labels
+        }
+        
+        # Save extracted guidelines to file for inspection
+        output_dir = Path(__file__).parent / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        guidelines_json_path = output_dir / "extracted_guidelines.json"
+        with open(guidelines_json_path, "w", encoding="utf-8") as f:
+            json.dump(guidelines_dict, f, indent=2)
+        print(f"Saved extracted guidelines to: {guidelines_json_path}")
+        
+        # Build detailed success message showing what was extracted
+        label_names = list(guidelines_dict.keys())
+        status_msg = f"✅ Successfully extracted {len(label_names)} labels:\n\n"
+        
+        # Show details for each label
+        for label_name, label_info in guidelines_dict.items():
+            status_msg += f"📌 {label_name.upper()}\n"
+            status_msg += f"   Definition: {label_info.get('definition', 'N/A')[:150]}...\n"
+            
+            characteristics = label_info.get('key_characteristics', [])
+            if characteristics:
+                status_msg += f"   Visual Features ({len(characteristics)}):\n"
+                for char in characteristics[:3]:  # Show first 3
+                    status_msg += f"      • {char[:100]}...\n"
+                if len(characteristics) > 3:
+                    status_msg += f"      ... and {len(characteristics) - 3} more\n"
+            else:
+                status_msg += "   ⚠️ No visual characteristics extracted!\n"
+            
+            status_msg += "\n"
+        
+        status_msg += (
+            f"✅ Full extraction saved to: {guidelines_json_path}\n\n"
+            "These guidelines will be used during validation to provide "
+            "Gemini with precise label definitions and visual characteristics."
+        )
+        
+        print(f"Extracted guidelines for labels: {label_names}")
+        print(f"Full guidelines saved to: {guidelines_json_path}")
+        return status_msg, guidelines_dict
+    
+    except Exception as e:
+        error_msg = f"❌ Error processing PDF: {str(e)}"
+        print(error_msg)
+        import traceback
+        traceback.print_exc()
+        return error_msg, {}
+
+
 def run_qc_validation(
     api_key: str,
     api_secret: str,
@@ -60,6 +210,8 @@ def run_qc_validation(
     statuses: List[str],
     max_files: int = 50,
     confidence_threshold: float = 0.5,
+    export_timeout: int = 900,
+    guidelines_dict: dict = None,
 ) -> Tuple[str, str, str, List[Tuple[str, str]]]:
     """
     Main function to run QC validation on Labellerr data.
@@ -73,10 +225,15 @@ def run_qc_validation(
         statuses: List of annotation statuses to filter
         max_files: Maximum number of files to process
         confidence_threshold: Threshold for flagging low confidence
+        export_timeout: Maximum time to wait for export completion in seconds (default: 900 = 15 minutes)
+        guidelines_dict: Optional dict of label definitions from PDF guidelines
         
     Returns:
         Tuple of (status_message, results_json, summary_text, low_confidence_gallery)
     """
+    # Default to empty dict if None
+    if guidelines_dict is None:
+        guidelines_dict = {}
     try:
         # Validate inputs
         if not all([api_key, api_secret, client_id, project_id]):
@@ -91,8 +248,17 @@ def run_qc_validation(
         output_dir = Path(__file__).parent / "output"
         output_dir.mkdir(parents=True, exist_ok=True)
         
+        # Setup logging to capture prompts
+        log_file = setup_logging(output_dir)
+        logger.info("Starting QC validation run")
+        logger.info(f"Guidelines provided: {len(guidelines_dict)} labels")
+        if guidelines_dict:
+            logger.info(f"Guidelines labels: {list(guidelines_dict.keys())}")
+        
         # Step 1: Fetch data from Labellerr
-        status_msg = "📥 Fetching data from Labellerr...\n"
+        # Convert UI status names to API status names
+        api_statuses = map_statuses_to_api(statuses)
+        status_msg = f"📥 Fetching data from Labellerr (statuses: {api_statuses})...\n"
         print(status_msg)
         
         coco_json_path, images_dir, metadata = fetch_labellerr_data(
@@ -100,200 +266,94 @@ def run_qc_validation(
             api_secret=api_secret,
             client_id=client_id,
             project_id=project_id,
-            statuses=statuses,
+            statuses=api_statuses,
             output_dir=output_dir,
+            export_timeout=export_timeout,
         )
         
         status_msg += f"✓ Downloaded {metadata['total_images']} images\n"
         status_msg += f"✓ Annotations saved to: {coco_json_path}\n\n"
         
-        # Step 2: Load dataset
-        status_msg += "📂 Loading COCO dataset...\n"
+        # Step 2: Run LangGraph workflow for validation
+        status_msg += " Starting QC Validation Workflow...\n"
         print(status_msg)
         
-        dataset = load_coco_dataset(coco_json_path)
-        status_msg += f"✓ Loaded {len(dataset.annotations)} annotations from {len(dataset.images)} images\n"
-        status_msg += f"✓ Categories: {', '.join(cat.name for cat in dataset.categories.values())}\n\n"
-        
-        # Step 3: Initialize Gemini validator
-        status_msg += "🤖 Initializing Gemini validator...\n"
-        print(status_msg)
-        
-        validator = create_demo_validator(
-            api_key=gemini_api_key,
-            model_name="gemini-2.0-flash-exp",
-            temperature=0.2,
-            max_retries=3,
-        )
-        status_msg += "✓ Gemini validator ready\n\n"
-        
-        # Step 4: Process annotations
-        status_msg += f"🔍 Processing annotations (max {max_files})...\n"
-        print(status_msg)
-        
-        results: List[ValidationResult] = []
-        crops_dir = output_dir / "crops"
-        crops_dir.mkdir(parents=True, exist_ok=True)
-        
-        image_cache: Dict[int, Image.Image] = {}
-        
-        try:
-            annotations_to_process = list(dataset.iter_annotations())[:max_files]
-            
-            for idx, (image_info, annotation, category) in enumerate(annotations_to_process, 1):
-                print(f"  [{idx}/{len(annotations_to_process)}] Processing {category.name}...", end=" ")
-                
-                # Load image (with caching)
-                if image_info.id not in image_cache:
-                    image_path = images_dir / image_info.file_name
-                    if not image_path.exists():
-                        print(f"✗ (image not found: {image_path})")
-                        continue
-                    
-                    with Image.open(image_path) as img:
-                        image_cache[image_info.id] = img.convert("RGB")
-                
-                base_image = image_cache[image_info.id]
-                
-                # Generate crop
-                try:
-                    crop_config = CropConfig(padding=8, mask_polygon=True)
-                    crop = crop_annotation(base_image, annotation, crop_config)
-                    
-                    # Save crop
-                    safe_label = category.name.replace(" ", "_").replace("/", "_")
-                    crop_filename = f"crop_{annotation.id}_{safe_label}.png"
-                    crop_path = crops_dir / crop_filename
-                    crop.save(crop_path)
-                    
-                    # Validate with Gemini
-                    confidence = None
-                    gemini_response = None
-                    error = None
-                    
-                    try:
-                        crop_bytes = image_to_png_bytes(crop)
-                        response = validator.validate_crop(
-                            crop_bytes=crop_bytes,
-                            expected_label=category.name,
-                            guidelines=None,
-                        )
-                        confidence = response.confidence
-                        gemini_response = response.raw_text
-                        print(f"✓ (confidence: {confidence:.2f})")
-                    except Exception as e:
-                        error = str(e)
-                        print(f"✗ (validation error: {error})")
-                    
-                    results.append(ValidationResult(
-                        image_id=image_info.id,
-                        annotation_id=annotation.id,
-                        image_file=image_info.file_name,
-                        label=category.name,
-                        crop_path=str(crop_path.relative_to(output_dir)),
-                        confidence=confidence,
-                        gemini_response=gemini_response,
-                        error=error,
-                    ))
-                    
-                except Exception as e:
-                    print(f"✗ (crop error: {e})")
-                    results.append(ValidationResult(
-                        image_id=image_info.id,
-                        annotation_id=annotation.id,
-                        image_file=image_info.file_name,
-                        label=category.name,
-                        crop_path="",
-                        confidence=None,
-                        gemini_response=None,
-                        error=str(e),
-                    ))
-        
-        finally:
-            # Close cached images
-            for img in image_cache.values():
-                img.close()
-        
-        # Step 5: Generate summary
-        status_msg += f"\n📊 Generating summary...\n"
-        
-        successful_crops = [r for r in results if r.crop_path]
-        gemini_results = [r for r in results if r.confidence is not None]
-        
-        avg_confidence = None
-        if gemini_results:
-            avg_confidence = sum(r.confidence for r in gemini_results) / len(gemini_results)
-        
-        # Confidence by category
-        confidence_by_cat: Dict[str, List[float]] = {}
-        for r in gemini_results:
-            if r.label not in confidence_by_cat:
-                confidence_by_cat[r.label] = []
-            confidence_by_cat[r.label].append(r.confidence)
-        
-        confidence_by_category = {
-            label: sum(scores) / len(scores)
-            for label, scores in confidence_by_cat.items()
-        }
-        
-        # Find low confidence annotations
-        low_confidence = [
-            {
-                "annotation_id": r.annotation_id,
-                "label": r.label,
-                "confidence": r.confidence,
-                "crop_path": str(output_dir / r.crop_path),
-            }
-            for r in gemini_results
-            if r.confidence < confidence_threshold
-        ]
-        
-        summary = ValidationSummary(
-            total_annotations=len(results),
-            total_crops_saved=len(successful_crops),
-            gemini_validations=len(gemini_results),
-            average_confidence=avg_confidence,
-            confidence_by_category=confidence_by_category,
-            low_confidence_annotations=low_confidence,
+        # Create workflow
+        workflow = QCValidationWorkflow(
+            gemini_api_key=gemini_api_key,
+            output_dir=output_dir,
         )
         
-        # Save results
-        results_path = output_dir / "qc_results.json"
-        output_data = {
-            "metadata": metadata,
-            "results": [asdict(r) for r in results],
-            "summary": asdict(summary),
-        }
+        # Determine PDF path - for now we don't support PDF upload in this flow
+        # Guidelines are extracted separately via process_guidelines_pdf
+        pdf_path = None
         
-        results_path.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
+        # Run workflow with pre-extracted guidelines if available
+        final_state, results, summary = workflow.run(
+            pdf_path=pdf_path,
+            coco_json_path=coco_json_path,
+            images_dir=images_dir,
+            max_files=max_files,
+            confidence_threshold=confidence_threshold,
+            pre_extracted_guidelines=guidelines_dict if guidelines_dict else None,
+        )
         
-        status_msg += f"✓ Results saved to: {results_path}\n\n"
+        # Check for workflow errors
+        if final_state.get("error"):
+            return f"❌ Workflow error: {final_state['error']}", "", "", []
+        
+        # Step 3: Format final status message
         status_msg += "=" * 70 + "\n"
         status_msg += "✅ QC VALIDATION COMPLETE\n"
         status_msg += "=" * 70 + "\n"
         
+        logger.info("QC validation complete")
+        logger.info(f"Processed {summary.total_annotations} annotations")
+        logger.info(f"Average confidence: {summary.average_confidence}")
+        
         # Format summary text
+        avg_conf_str = f"{summary.average_confidence:.3f}" if summary.average_confidence else "N/A"
+        accuracy = (summary.matches / summary.gemini_validations * 100) if summary.gemini_validations > 0 else 0
         summary_text = f"""
 📊 SUMMARY STATISTICS
 {'=' * 70}
 Total annotations:        {summary.total_annotations}
 Crops saved:              {summary.total_crops_saved}
 Gemini validations:       {summary.gemini_validations}
-Average confidence:       {summary.average_confidence:.3f if summary.average_confidence else 'N/A'}
-Low confidence count:     {len(low_confidence)} (< {confidence_threshold})
+Matches:                  {summary.matches} ({accuracy:.1f}% accuracy)
+Mismatches:               {summary.mismatches}
+Average confidence:       {avg_conf_str}
+Low confidence count:     {len(summary.low_confidence_annotations)} (< {confidence_threshold})
 
 Confidence by category:
 """
         for label, conf in summary.confidence_by_category.items():
             summary_text += f"  • {label:30s} {conf:.3f}\n"
         
-        # Prepare low confidence gallery
+        # Prepare low confidence gallery (combine low confidence AND mismatches)
         low_conf_gallery = []
-        for item in low_confidence[:20]:  # Limit to 20 images
+        
+        # Add mismatches first (these are the most important issues)
+        for item in summary.mismatched_annotations[:20]:
             crop_path = item["crop_path"]
             if Path(crop_path).exists():
-                caption = f"{item['label']} (conf: {item['confidence']:.2f})"
+                caption = f"⚠️ MISMATCH: Expected '{item['label']}', Got '{item['prediction_label']}' (conf: {item['confidence']:.2f})"
                 low_conf_gallery.append((crop_path, caption))
+        
+        # Add low confidence items (that aren't already mismatches)
+        mismatch_ids = {item["annotation_id"] for item in summary.mismatched_annotations}
+        for item in summary.low_confidence_annotations[:20]:
+            if item["annotation_id"] not in mismatch_ids:
+                crop_path = item["crop_path"]
+                if Path(crop_path).exists():
+                    match_status = "✓" if item.get("is_match") else "✗"
+                    caption = f"{match_status} {item['label']} → {item.get('prediction_label', '?')} (conf: {item['confidence']:.2f})"
+                    low_conf_gallery.append((crop_path, caption))
+        
+        # Load results JSON for display
+        results_path = output_dir / "qc_results.json"
+        with open(results_path, "r", encoding="utf-8") as f:
+            output_data = json.load(f)
         
         return status_msg, json.dumps(output_data, indent=2), summary_text, low_conf_gallery
     
@@ -309,6 +369,9 @@ def create_gradio_interface():
     """Create and configure Gradio interface."""
     
     with gr.Blocks(title="Labellerr QC Validation", theme=gr.themes.Soft()) as demo:
+        # Session state for guidelines (temporary, per-session)
+        guidelines_state = gr.State(value={})
+        
         gr.Markdown("""
         # 🔍 Labellerr QC Validation Pipeline
         
@@ -316,9 +379,10 @@ def create_gradio_interface():
         
         **Workflow:**
         1. Enter your Labellerr and Gemini credentials
-        2. Select annotation statuses to validate
-        3. Click "Fetch & Run QC" to start validation
-        4. Review results and low-confidence annotations
+        2. (Optional) Upload annotation guidelines PDF
+        3. Select annotation statuses to validate
+        4. Click "Fetch & Run QC" to start validation
+        5. Review results and low-confidence annotations
         """)
         
         with gr.Row():
@@ -343,18 +407,42 @@ def create_gradio_interface():
                     placeholder="Enter Project ID",
                 )
                 
-                gr.Markdown("### 🤖 Gemini API")
+                gr.Markdown("###  Gemini API")
                 gemini_api_key = gr.Textbox(
                     label="Gemini API Key",
                     placeholder="Enter Gemini API Key",
                     type="password",
                 )
                 
+                # Annotation Guidelines (Optional)
+                with gr.Accordion("📋 Annotation Guidelines (Optional)", open=False):
+                    gr.Markdown(
+                        "Upload a PDF with annotation guidelines to improve validation accuracy. "
+                        "Gemini will use label definitions and characteristics from the PDF."
+                    )
+                    
+                    pdf_upload = gr.File(
+                        label="Guidelines PDF",
+                        file_types=[".pdf"],
+                        file_count="single",
+                    )
+                    process_guidelines_btn = gr.Button(
+                        "📄 Process Guidelines",
+                        variant="secondary",
+                        size="sm",
+                    )
+                    guidelines_status = gr.Textbox(
+                        label="Guidelines Status",
+                        interactive=False,
+                        lines=4,
+                        placeholder="Upload a PDF and click 'Process Guidelines' to extract label definitions..."
+                    )
+                
                 gr.Markdown("### ⚙️ Settings")
                 statuses = gr.CheckboxGroup(
-                    choices=["review", "r_assigned", "client_review", "cr_assigned", "accepted"],
+                    choices=["reviewer_layer", "client_reviewer_layer", "completed"],
                     label="Annotation Statuses",
-                    value=["accepted"],
+                    value=["completed"],
                     info="Select which annotation statuses to validate",
                 )
                 
@@ -364,7 +452,6 @@ def create_gradio_interface():
                         value=50,
                         minimum=1,
                         maximum=1000,
-                        step=1,
                     )
                     confidence_threshold = gr.Slider(
                         label="Low Confidence Threshold",
@@ -373,6 +460,14 @@ def create_gradio_interface():
                         value=0.5,
                         step=0.05,
                     )
+                
+                export_timeout = gr.Number(
+                    label="Export Timeout (seconds)",
+                    value=900,
+                    minimum=60,
+                    maximum=3600,
+                    info="Maximum time to wait for export completion (default: 900 = 15 minutes)",
+                )
                 
                 run_button = gr.Button("🚀 Fetch & Run QC", variant="primary", size="lg")
             
@@ -400,16 +495,29 @@ def create_gradio_interface():
                         show_label=False,
                     )
                 
-                with gr.Accordion("⚠️ Low Confidence Annotations", open=True):
+                with gr.Accordion("⚠️ Issues Found (Mismatches & Low Confidence)", open=True):
                     low_conf_gallery = gr.Gallery(
-                        label="Low Confidence Crops",
+                        label="Mismatched Labels and Low Confidence Annotations",
                         show_label=True,
                         columns=4,
                         rows=2,
                         height="auto",
                     )
         
-        # Connect button to function
+        # Connect guidelines processing button
+        process_guidelines_btn.click(
+            fn=process_guidelines_pdf,
+            inputs=[
+                pdf_upload,
+                gemini_api_key,
+            ],
+            outputs=[
+                guidelines_status,
+                guidelines_state,
+            ],
+        )
+        
+        # Connect validation button
         run_button.click(
             fn=run_qc_validation,
             inputs=[
@@ -421,6 +529,8 @@ def create_gradio_interface():
                 statuses,
                 max_files,
                 confidence_threshold,
+                export_timeout,
+                guidelines_state,  # Pass session guidelines
             ],
             outputs=[
                 status_output,
@@ -435,6 +545,8 @@ def create_gradio_interface():
         ### 📝 Notes
         - Export filters annotations by status, but downloads all images referenced by those annotations
         - Only filtered annotations are validated with Gemini
+        - **Optional**: Upload annotation guidelines PDF to provide Gemini with precise label definitions
+        - Guidelines are session-scoped (cleared when browser closes)
         - Results are saved to `demo/labellerr-integration/output/qc_results.json`
         - Crops are saved to `demo/labellerr-integration/output/crops/`
         """)

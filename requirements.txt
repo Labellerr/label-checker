@@ -1,5 +1,21 @@
+# Core dependencies
 Pillow>=10.0.0
 requests>=2.31.0
 pytest>=7.4.0
 gradio>=4.0.0
+pypdf>=4.0.0
+pydantic>=2.0.0
+
+# LangChain core (required)
+langchain-core>=0.2.0
+langgraph>=0.0.20
+
+# LLM Provider integrations (install as needed)
+# At least one provider is required for validation
+langchain-google-genai>=2.0.0    # For Gemini models
+langchain-openai>=0.1.0          # For OpenAI models (gpt-4o, etc.)
+langchain-anthropic>=0.1.0       # For Anthropic models (Claude)
+
+# Optional: Platform integrations
+# labellerr                       # For Labellerr platform integration
 

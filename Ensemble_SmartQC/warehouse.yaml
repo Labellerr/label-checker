@@ -1,0 +1,31 @@
+path: /home/aparna.alladi/warehouse_detection_dataset/yolo
+
+train: images/train
+val: images/train
+
+names:
+  0: barrel
+  1: barcode
+  2: bottle
+  3: box
+  4: bracket
+  5: bucket
+  6: cart
+  7: ceiling
+  8: cone
+  9: crate
+  10: emergency_board
+  11: fire_extinguisher
+  12: floor
+  13: floor_decal
+  14: forklift
+  15: fuse_box
+  16: lamp
+  17: pallet
+  18: paper_note
+  19: paper_shortcut
+  20: pillar
+  21: rack
+  22: sign
+  23: wall
+  24: wire

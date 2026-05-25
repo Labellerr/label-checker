@@ -1,0 +1,32 @@
+# SmartQC — Python dependencies
+# Install with: pip install -r requirements.txt
+#
+# GPU strongly recommended (CUDA 11.8+).
+# CPU fallback works but is 3-5x slower.
+
+# ── Core AI models ────────────────────────────────────────────────
+torch>=2.0.0               # DINOv2 + CLIP inference (GPU support)
+transformers>=4.35.0       # DINOv2-base + CLIP ViT-B/32 from HuggingFace
+ultralytics>=8.0.0         # YOLOv8 object detection (IoU signal)
+                           # Optional: omit if running CLIP+DINOv2 only (mock IoU)
+
+# ── Data handling ─────────────────────────────────────────────────
+Pillow>=9.0.0              # Image loading and crop extraction
+numpy>=1.23.0              # Array operations
+pandas>=1.5.0              # Annotation dataframe
+scikit-learn>=1.3.0        # KMeans (prototype clustering)
+
+# ── Pipeline utilities ────────────────────────────────────────────
+tqdm>=4.64.0               # Progress bars
+
+# ── REST API ──────────────────────────────────────────────────────
+fastapi>=0.100.0           # API framework
+uvicorn>=0.23.0            # ASGI server
+
+# ── label-checker integration ─────────────────────────────────────
+langchain>=0.1.0           # Required by label-checker validators
+langgraph>=0.0.20          # Required by label-checker QCValidationWorkflow
+pypdf>=3.0.0               # PDF guidelines extraction (optional)
+
+# ── Testing ───────────────────────────────────────────────────────
+pytest>=7.0.0              # Unit tests (run without GPU — models are mocked)

@@ -1,0 +1,30 @@
+{
+  "_comment": "Replace this file with your own class_mapping.json. Format: list of classes with id, name, and category.",
+  "classes": [
+    { "id": 0,  "name": "box",               "category": "storage" },
+    { "id": 1,  "name": "crate",             "category": "storage" },
+    { "id": 2,  "name": "barrel",            "category": "storage" },
+    { "id": 3,  "name": "bottle",            "category": "storage" },
+    { "id": 4,  "name": "pallet",            "category": "storage" },
+    { "id": 5,  "name": "rack",              "category": "infrastructure" },
+    { "id": 6,  "name": "bracket",           "category": "infrastructure" },
+    { "id": 7,  "name": "lamp",              "category": "infrastructure" },
+    { "id": 8,  "name": "sign",              "category": "infrastructure" },
+    { "id": 9,  "name": "wire",              "category": "infrastructure" },
+    { "id": 10, "name": "fuse_box",          "category": "infrastructure" },
+    { "id": 11, "name": "floor_decal",       "category": "infrastructure" },
+    { "id": 12, "name": "fire_extinguisher", "category": "safety" },
+    { "id": 13, "name": "barcode",           "category": "label" },
+    { "id": 14, "name": "pillar",            "category": "infrastructure" },
+    { "id": 15, "name": "forklift",          "category": "vehicle" },
+    { "id": 16, "name": "bucket",            "category": "equipment" },
+    { "id": 17, "name": "cone",              "category": "safety" },
+    { "id": 18, "name": "cart",              "category": "equipment" },
+    { "id": 19, "name": "emergency_board",   "category": "safety" },
+    { "id": 20, "name": "paper_note",        "category": "label" },
+    { "id": 21, "name": "paper_shortcut",    "category": "label" },
+    { "id": 22, "name": "wall",              "category": "background" },
+    { "id": 23, "name": "ceiling",           "category": "background" },
+    { "id": 24, "name": "floor",             "category": "background" }
+  ]
+}
